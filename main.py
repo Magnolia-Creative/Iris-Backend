@@ -4,7 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,26 +59,44 @@ async def db_health(db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/ingest")
-async def create_project_clip_transcript_summary(
-    payload: IngestCreate, db: AsyncSession = Depends(get_db)
-):
-    project = models.Project(name=payload.project_name)
-    db.add(project)
-    await db.flush()
+async def ingest_videos(videos: list[UploadFile] = File(...)):
+    if not 1 <= len(videos) <= 10:
+        raise HTTPException(
+            status_code=400, detail="Upload between 1 and 10 videos per request."
+        )
 
-    clip = models.Clip(project_id=project.id, **payload.clip.model_dump())
-    db.add(clip)
-    await db.flush()
+    video_details: list[dict[str, Any]] = []
 
-    transcript = models.Transcript(clip_id=clip.id, transcript=payload.transcript)
-    summary = models.Summary(clip_id=clip.id, summary=payload.summary)
-    db.add_all([transcript, summary])
+    for index, video in enumerate(videos, start=1):
+        video.file.seek(0, 2)
+        file_size_bytes = video.file.tell()
+        video.file.seek(0)
 
-    await db.commit()
+        extension = Path(video.filename or "").suffix.lower()
+        metadata = {
+            "index": index,
+            "file_name": video.filename,
+            "mime_type": video.content_type,
+            "extension": extension,
+            "file_size_bytes": file_size_bytes,
+        }
+        video_details.append(metadata)
 
-    return {
-        "project_id": project.id,
-        "clip_id": clip.id,
-        "transcript_id": transcript.id,
-        "summary_id": summary.id,
-    }
+        # Logs each uploaded file's metadata so we can inspect requests quickly.
+        print(f"[INGEST] Video {index}: {metadata}")
+
+    # DB additions are temporarily disabled while the new ingest workflow is rebuilt.
+    # project = models.Project(name=payload.project_name)
+    # db.add(project)
+    # await db.flush()
+    #
+    # clip = models.Clip(project_id=project.id, **payload.clip.model_dump())
+    # db.add(clip)
+    # await db.flush()
+    #
+    # transcript = models.Transcript(clip_id=clip.id, transcript=payload.transcript)
+    # summary = models.Summary(clip_id=clip.id, summary=payload.summary)
+    # db.add_all([transcript, summary])
+    # await db.commit()
+
+    return {"uploaded_count": len(video_details), "videos": video_details}
