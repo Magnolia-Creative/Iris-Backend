@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
+import logging
 from typing import Any
 
 from pathlib import Path
@@ -12,7 +13,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
+from app.services.transcription import extract_and_transcribe_async
 from app import models  # noqa: F401
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class ClipCreate(BaseModel):
@@ -47,6 +56,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 
+
 @app.get("/")
 def health():
     return {"status": "ok"}
@@ -65,25 +75,55 @@ async def ingest_videos(videos: list[UploadFile] = File(...)):
             status_code=400, detail="Upload between 1 and 10 videos per request."
         )
 
+    logger.info("[INGEST] Received request with %d video(s)", len(videos))
     video_details: list[dict[str, Any]] = []
 
     for index, video in enumerate(videos, start=1):
         video.file.seek(0, 2)
         file_size_bytes = video.file.tell()
         video.file.seek(0)
+        video_bytes = await video.read()
 
         extension = Path(video.filename or "").suffix.lower()
+        logger.info(
+            "[INGEST] Processing video %d file=%s mime=%s size=%d",
+            index,
+            video.filename,
+            video.content_type,
+            file_size_bytes,
+        )
+        try:
+            transcript_segments = await extract_and_transcribe_async(video_bytes)
+        except Exception as exc:
+            logger.exception(
+                "[INGEST] Transcription failed for video %d file=%s",
+                index,
+                video.filename,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Transcription failed for {video.filename or f'video-{index}'}; "
+                    "check server logs for details."
+                ),
+            ) from exc
+
         metadata = {
             "index": index,
             "file_name": video.filename,
             "mime_type": video.content_type,
             "extension": extension,
             "file_size_bytes": file_size_bytes,
+            "transcript_segments": transcript_segments,
         }
         video_details.append(metadata)
 
-        # Logs each uploaded file's metadata so we can inspect requests quickly.
-        print(f"[INGEST] Video {index}: {metadata}")
+        logger.info(
+            "[INGEST] Completed video %d file=%s segments=%d",
+            index,
+            video.filename,
+            len(transcript_segments),
+        )
 
     # DB additions are temporarily disabled while the new ingest workflow is rebuilt.
     # project = models.Project(name=payload.project_name)
@@ -99,4 +139,5 @@ async def ingest_videos(videos: list[UploadFile] = File(...)):
     # db.add_all([transcript, summary])
     # await db.commit()
 
+    logger.info("[INGEST] Completed request with %d processed video(s)", len(video_details))
     return {"uploaded_count": len(video_details), "videos": video_details}
