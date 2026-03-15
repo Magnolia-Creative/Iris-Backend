@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 import logging
@@ -93,6 +94,7 @@ async def ingest_videos(
             project.name,
         )
 
+        prepared_videos: list[dict[str, Any]] = []
         for index, video in enumerate(videos, start=1):
             video.file.seek(0, 2)
             file_size_bytes = video.file.tell()
@@ -100,20 +102,44 @@ async def ingest_videos(
             video_bytes = await video.read()
 
             extension = Path(video.filename or "").suffix.lower()
+            prepared_videos.append(
+                {
+                    "index": index,
+                    "video": video,
+                    "file_size_bytes": file_size_bytes,
+                    "video_bytes": video_bytes,
+                    "extension": extension,
+                }
+            )
             logger.info(
-                "[INGEST] Processing video %d file=%s mime=%s size=%d",
+                "[INGEST] Prepared video %d file=%s mime=%s size=%d for transcription",
                 index,
                 video.filename,
                 video.content_type,
                 file_size_bytes,
             )
-            try:
-                transcript_segments = await extract_and_transcribe_async(video_bytes)
-            except Exception as exc:
+
+        logger.info("[INGEST] Launching %d concurrent transcription task(s)", len(prepared_videos))
+        transcription_tasks = [
+            extract_and_transcribe_async(prepared_video["video_bytes"])
+            for prepared_video in prepared_videos
+        ]
+        transcription_results = await asyncio.gather(*transcription_tasks, return_exceptions=True)
+
+        for prepared_video, transcription_result in zip(
+            prepared_videos, transcription_results, strict=True
+        ):
+            index = prepared_video["index"]
+            video = prepared_video["video"]
+            file_size_bytes = prepared_video["file_size_bytes"]
+            extension = prepared_video["extension"]
+
+            if isinstance(transcription_result, Exception):
                 logger.exception(
                     "[INGEST] Transcription failed for video %d file=%s",
                     index,
                     video.filename,
+                    exc_info=transcription_result,
                 )
                 raise HTTPException(
                     status_code=502,
@@ -121,7 +147,9 @@ async def ingest_videos(
                         f"Transcription failed for {video.filename or f'video-{index}'}; "
                         "check server logs for details."
                     ),
-                ) from exc
+                ) from transcription_result
+
+            transcript_segments = transcription_result
 
             clip = models.Clip(
                 project_id=project.id,
