@@ -15,7 +15,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
-from app.services.transcription import transcribe_audio_async
+from app.services.transcription import transcribe_upload_async
+from app.services.transcript_normalize import (
+    normalize_transcript_segments,
+    segments_to_full_text,
+)
 from app import models  # noqa: F401
 
 
@@ -72,9 +76,12 @@ async def db_health(db: AsyncSession = Depends(get_db)):
 
 async def _transcribe_with_timing(prepared: dict[str, Any]) -> list[dict[str, Any]]:
     video = prepared["video"]
+    suffix = prepared.get("extension") or ".m4a"
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
     t0 = time.perf_counter()
     try:
-        return await transcribe_audio_async(prepared["video_bytes"])
+        return await transcribe_upload_async(prepared["video_bytes"], suffix)
     finally:
         logger.info(
             "[INGEST] Transcription finished video=%d file=%s duration_s=%.3f",
@@ -180,13 +187,19 @@ async def ingest_videos(
                     ),
                 ) from transcription_result
 
-            transcript_segments = transcription_result
+            raw_segments = transcription_result
+            if not isinstance(raw_segments, list):
+                raw_segments = list(raw_segments) if raw_segments is not None else []
+            segment_dicts = [s for s in raw_segments if isinstance(s, dict)]
+            transcript_segments = normalize_transcript_segments(segment_dicts)
+            full_text = segments_to_full_text(transcript_segments)
 
             transcript_payload = {
                 "source_file": video.filename,
                 "mime_type": video.content_type,
                 "extension": extension,
                 "segments": transcript_segments,
+                "full_text": full_text,
             }
             clip = models.Clip(
                 project_id=project.id,
@@ -210,6 +223,9 @@ async def ingest_videos(
             if transcript is None:
                 raise RuntimeError("clip.transcript missing after flush")
 
+            tr = transcript.transcript if isinstance(transcript.transcript, dict) else {}
+            full_text = tr.get("full_text") or segments_to_full_text(transcript_segments)
+
             metadata = {
                 "index": index,
                 "project_id": project.id,
@@ -220,6 +236,7 @@ async def ingest_videos(
                 "extension": extension,
                 "file_size_bytes": file_size_bytes,
                 "transcript_segments": transcript_segments,
+                "transcript_full_text": full_text,
             }
             video_details.append(metadata)
 
