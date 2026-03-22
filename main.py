@@ -1,16 +1,33 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import asyncio
 from datetime import datetime
+import time
 from decimal import Decimal
+import logging
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
+from app.services.transcription import transcribe_upload_async
+from app.services.transcript_normalize import (
+    normalize_transcript_segments,
+    segments_to_full_text,
+)
 from app import models  # noqa: F401
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class ClipCreate(BaseModel):
@@ -45,6 +62,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 
+
 @app.get("/")
 def health():
     return {"status": "ok"}
@@ -56,27 +74,205 @@ async def db_health(db: AsyncSession = Depends(get_db)):
     return {"database": "ok", "result": result.scalar_one()}
 
 
+async def _transcribe_with_timing(prepared: dict[str, Any]) -> list[dict[str, Any]]:
+    video = prepared["video"]
+    suffix = prepared.get("extension") or ".m4a"
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    t0 = time.perf_counter()
+    try:
+        return await transcribe_upload_async(prepared["video_bytes"], suffix)
+    finally:
+        logger.info(
+            "[INGEST] Transcription finished video=%d file=%s duration_s=%.3f",
+            prepared["index"],
+            video.filename,
+            time.perf_counter() - t0,
+        )
+
+
 @app.post("/ingest")
-async def create_project_clip_transcript_summary(
-    payload: IngestCreate, db: AsyncSession = Depends(get_db)
+async def ingest_videos(
+    videos: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    project_name: str | None = None,
 ):
-    project = models.Project(name=payload.project_name)
-    db.add(project)
-    await db.flush()
+    if not 1 <= len(videos) <= 10:
+        raise HTTPException(
+            status_code=400, detail="Upload between 1 and 10 videos per request."
+        )
 
-    clip = models.Clip(project_id=project.id, **payload.clip.model_dump())
-    db.add(clip)
-    await db.flush()
+    request_t0 = time.perf_counter()
+    logger.info("[INGEST] Received request with %d video(s)", len(videos))
+    video_details: list[dict[str, Any]] = []
+    resolved_project_name = project_name or f"ingest-{datetime.utcnow().isoformat(timespec='seconds')}"
 
-    transcript = models.Transcript(clip_id=clip.id, transcript=payload.transcript)
-    summary = models.Summary(clip_id=clip.id, summary=payload.summary)
-    db.add_all([transcript, summary])
+    try:
+        t_project = time.perf_counter()
+        project = models.Project(name=resolved_project_name)
+        db.add(project)
+        await db.flush()
+        logger.info(
+            "[INGEST] Created project id=%s name=%s duration_s=%.3f",
+            project.id,
+            project.name,
+            time.perf_counter() - t_project,
+        )
 
-    await db.commit()
+        prepared_videos: list[dict[str, Any]] = []
+        t_prepare = time.perf_counter()
+        for index, video in enumerate(videos, start=1):
+            t_read = time.perf_counter()
+            video.file.seek(0, 2)
+            file_size_bytes = video.file.tell()
+            video.file.seek(0)
+            video_bytes = await video.read()
+            read_s = time.perf_counter() - t_read
 
+            extension = Path(video.filename or "").suffix.lower()
+            prepared_videos.append(
+                {
+                    "index": index,
+                    "video": video,
+                    "file_size_bytes": file_size_bytes,
+                    "video_bytes": video_bytes,
+                    "extension": extension,
+                }
+            )
+            logger.info(
+                "[INGEST] Prepared video %d file=%s mime=%s size=%d read_upload_s=%.3f",
+                index,
+                video.filename,
+                video.content_type,
+                file_size_bytes,
+                read_s,
+            )
+        logger.info(
+            "[INGEST] All uploads buffered duration_s=%.3f",
+            time.perf_counter() - t_prepare,
+        )
+
+        logger.info("[INGEST] Launching %d concurrent transcription task(s)", len(prepared_videos))
+        t_transcribe_wall = time.perf_counter()
+        transcription_tasks = [_transcribe_with_timing(pv) for pv in prepared_videos]
+        transcription_results = await asyncio.gather(*transcription_tasks, return_exceptions=True)
+        logger.info(
+            "[INGEST] Transcription batch wall_duration_s=%.3f (concurrent)",
+            time.perf_counter() - t_transcribe_wall,
+        )
+
+        t_persist = time.perf_counter()
+        pending_rows: list[tuple[dict[str, Any], models.Clip, list[dict[str, Any]]]] = []
+
+        for prepared_video, transcription_result in zip(
+            prepared_videos, transcription_results, strict=True
+        ):
+            index = prepared_video["index"]
+            video = prepared_video["video"]
+            file_size_bytes = prepared_video["file_size_bytes"]
+            extension = prepared_video["extension"]
+
+            if isinstance(transcription_result, Exception):
+                logger.exception(
+                    "[INGEST] Transcription failed for video %d file=%s",
+                    index,
+                    video.filename,
+                    exc_info=transcription_result,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Transcription failed for {video.filename or f'video-{index}'}; "
+                        "check server logs for details."
+                    ),
+                ) from transcription_result
+
+            raw_segments = transcription_result
+            if not isinstance(raw_segments, list):
+                raw_segments = list(raw_segments) if raw_segments is not None else []
+            segment_dicts = [s for s in raw_segments if isinstance(s, dict)]
+            transcript_segments = normalize_transcript_segments(segment_dicts)
+            full_text = segments_to_full_text(transcript_segments)
+
+            transcript_payload = {
+                "source_file": video.filename,
+                "mime_type": video.content_type,
+                "extension": extension,
+                "segments": transcript_segments,
+                "full_text": full_text,
+            }
+            clip = models.Clip(
+                project_id=project.id,
+                title=Path(video.filename or f"video-{index}").stem,
+                file_name=video.filename,
+                mime_type=video.content_type,
+                file_size_bytes=file_size_bytes,
+            )
+            clip.transcript = models.Transcript(transcript=transcript_payload)
+            db.add(clip)
+            pending_rows.append((prepared_video, clip, transcript_segments))
+
+        await db.flush()
+
+        for prepared_video, clip, transcript_segments in pending_rows:
+            index = prepared_video["index"]
+            video = prepared_video["video"]
+            file_size_bytes = prepared_video["file_size_bytes"]
+            extension = prepared_video["extension"]
+            transcript = clip.transcript
+            if transcript is None:
+                raise RuntimeError("clip.transcript missing after flush")
+
+            tr = transcript.transcript if isinstance(transcript.transcript, dict) else {}
+            full_text = tr.get("full_text") or segments_to_full_text(transcript_segments)
+
+            metadata = {
+                "index": index,
+                "project_id": project.id,
+                "clip_id": clip.id,
+                "transcript_id": transcript.id,
+                "file_name": video.filename,
+                "mime_type": video.content_type,
+                "extension": extension,
+                "file_size_bytes": file_size_bytes,
+                "transcript_segments": transcript_segments,
+                "transcript_full_text": full_text,
+            }
+            video_details.append(metadata)
+
+            logger.info(
+                "[INGEST] Saved video %d file=%s clip_id=%s transcript_id=%s segments=%d",
+                index,
+                video.filename,
+                clip.id,
+                transcript.id,
+                len(transcript_segments),
+            )
+
+        logger.info(
+            "[INGEST] DB persist (single batch flush) duration_s=%.3f",
+            time.perf_counter() - t_persist,
+        )
+        t_commit = time.perf_counter()
+        await db.commit()
+        logger.info("[INGEST] DB commit duration_s=%.3f", time.perf_counter() - t_commit)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("[INGEST] Unexpected ingest failure")
+        raise HTTPException(status_code=500, detail="Ingest failed; check server logs for details.") from exc
+
+    logger.info(
+        "[INGEST] Completed request project_id=%s with %d processed video(s) total_duration_s=%.3f",
+        project.id,
+        len(video_details),
+        time.perf_counter() - request_t0,
+    )
     return {
         "project_id": project.id,
-        "clip_id": clip.id,
-        "transcript_id": transcript.id,
-        "summary_id": summary.id,
+        "project_name": project.name,
+        "uploaded_count": len(video_details),
+        "videos": video_details,
     }
