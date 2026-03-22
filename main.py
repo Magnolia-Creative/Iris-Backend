@@ -155,6 +155,8 @@ async def ingest_videos(
         )
 
         t_persist = time.perf_counter()
+        pending_rows: list[tuple[dict[str, Any], models.Clip, list[dict[str, Any]]]] = []
+
         for prepared_video, transcription_result in zip(
             prepared_videos, transcription_results, strict=True
         ):
@@ -180,6 +182,12 @@ async def ingest_videos(
 
             transcript_segments = transcription_result
 
+            transcript_payload = {
+                "source_file": video.filename,
+                "mime_type": video.content_type,
+                "extension": extension,
+                "segments": transcript_segments,
+            }
             clip = models.Clip(
                 project_id=project.id,
                 title=Path(video.filename or f"video-{index}").stem,
@@ -187,21 +195,20 @@ async def ingest_videos(
                 mime_type=video.content_type,
                 file_size_bytes=file_size_bytes,
             )
+            clip.transcript = models.Transcript(transcript=transcript_payload)
             db.add(clip)
-            await db.flush()
+            pending_rows.append((prepared_video, clip, transcript_segments))
 
-            transcript_payload = {
-                "source_file": video.filename,
-                "mime_type": video.content_type,
-                "extension": extension,
-                "segments": transcript_segments,
-            }
-            transcript = models.Transcript(
-                clip_id=clip.id,
-                transcript=transcript_payload,
-            )
-            db.add(transcript)
-            await db.flush()
+        await db.flush()
+
+        for prepared_video, clip, transcript_segments in pending_rows:
+            index = prepared_video["index"]
+            video = prepared_video["video"]
+            file_size_bytes = prepared_video["file_size_bytes"]
+            extension = prepared_video["extension"]
+            transcript = clip.transcript
+            if transcript is None:
+                raise RuntimeError("clip.transcript missing after flush")
 
             metadata = {
                 "index": index,
@@ -226,7 +233,7 @@ async def ingest_videos(
             )
 
         logger.info(
-            "[INGEST] DB persist (flushes) duration_s=%.3f",
+            "[INGEST] DB persist (single batch flush) duration_s=%.3f",
             time.perf_counter() - t_persist,
         )
         t_commit = time.perf_counter()
