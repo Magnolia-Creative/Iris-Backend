@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import asyncio
 from datetime import datetime
 import time
+import uuid
 from decimal import Decimal
 import logging
 from typing import Any
@@ -15,8 +16,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
-from app.services.transcription import transcribe_upload_async
+from app.services.transcription import transcribe_upload_for_ingest
 from app.services.transcript_normalize import (
+    json_safe_value,
     normalize_transcript_segments,
     segments_to_full_text,
 )
@@ -74,23 +76,6 @@ async def db_health(db: AsyncSession = Depends(get_db)):
     return {"database": "ok", "result": result.scalar_one()}
 
 
-async def _transcribe_with_timing(prepared: dict[str, Any]) -> list[dict[str, Any]]:
-    video = prepared["video"]
-    suffix = prepared.get("extension") or ".m4a"
-    if not suffix.startswith("."):
-        suffix = f".{suffix}"
-    t0 = time.perf_counter()
-    try:
-        return await transcribe_upload_async(prepared["video_bytes"], suffix)
-    finally:
-        logger.info(
-            "[INGEST] Transcription finished video=%d file=%s duration_s=%.3f",
-            prepared["index"],
-            video.filename,
-            time.perf_counter() - t0,
-        )
-
-
 @app.post("/ingest")
 async def ingest_videos(
     videos: list[UploadFile] = File(...),
@@ -137,6 +122,7 @@ async def ingest_videos(
                     "file_size_bytes": file_size_bytes,
                     "video_bytes": video_bytes,
                     "extension": extension,
+                    "clip_correlation_id": uuid.uuid4().hex,
                 }
             )
             logger.info(
@@ -154,7 +140,16 @@ async def ingest_videos(
 
         logger.info("[INGEST] Launching %d concurrent transcription task(s)", len(prepared_videos))
         t_transcribe_wall = time.perf_counter()
-        transcription_tasks = [_transcribe_with_timing(pv) for pv in prepared_videos]
+        transcription_tasks = [
+            transcribe_upload_for_ingest(
+                pv["video_bytes"],
+                extension=pv.get("extension") or "",
+                index=pv["index"],
+                file_name=pv["video"].filename,
+                clip_correlation_id=pv.get("clip_correlation_id"),
+            )
+            for pv in prepared_videos
+        ]
         transcription_results = await asyncio.gather(*transcription_tasks, return_exceptions=True)
         logger.info(
             "[INGEST] Transcription batch wall_duration_s=%.3f (concurrent)",
@@ -187,12 +182,25 @@ async def ingest_videos(
                     ),
                 ) from transcription_result
 
-            raw_segments = transcription_result
+            if not isinstance(transcription_result, dict):
+                raise HTTPException(
+                    status_code=502,
+                    detail="Transcription returned an unexpected shape; expected object from transcribe_clip.",
+                )
+
+            raw_segments = transcription_result.get("transcript") or []
             if not isinstance(raw_segments, list):
-                raw_segments = list(raw_segments) if raw_segments is not None else []
+                raw_segments = []
+            video_report = transcription_result.get("video_report")
+            clip_meta = transcription_result.get("meta")
+            if clip_meta is not None and not isinstance(clip_meta, dict):
+                clip_meta = {}
+
             segment_dicts = [s for s in raw_segments if isinstance(s, dict)]
             transcript_segments = normalize_transcript_segments(segment_dicts)
             full_text = segments_to_full_text(transcript_segments)
+            safe_card = json_safe_value(video_report) if video_report is not None else None
+            safe_meta = json_safe_value(clip_meta) if clip_meta else {}
 
             transcript_payload = {
                 "source_file": video.filename,
@@ -200,6 +208,8 @@ async def ingest_videos(
                 "extension": extension,
                 "segments": transcript_segments,
                 "full_text": full_text,
+                "video_report": video_report,
+                "clip_meta": safe_meta,
             }
             clip = models.Clip(
                 project_id=project.id,
@@ -225,6 +235,8 @@ async def ingest_videos(
 
             tr = transcript.transcript if isinstance(transcript.transcript, dict) else {}
             full_text = tr.get("full_text") or segments_to_full_text(transcript_segments)
+            video_report = tr.get("video_report")
+            clip_meta = tr.get("clip_meta") if isinstance(tr.get("clip_meta"), dict) else {}
 
             metadata = {
                 "index": index,
@@ -237,6 +249,8 @@ async def ingest_videos(
                 "file_size_bytes": file_size_bytes,
                 "transcript_segments": transcript_segments,
                 "transcript_full_text": full_text,
+                "video_report": video_report,
+                "clip_meta": clip_meta,
             }
             video_details.append(metadata)
 
