@@ -13,6 +13,10 @@ from app.services.transcript_cache import get_cached_transcript
 logger = logging.getLogger(__name__)
 
 
+def _trace(message: str) -> None:
+    print(f"[TRACE][timeline_planner] {message}", flush=True)
+
+
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
     if not config:
         return {}
@@ -76,6 +80,9 @@ async def timeline_planner_node(
 ) -> dict[str, Any]:
     node_name = "timeline_planner"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
+    _trace(
+        f"start session={state.get('session_id')} prior_timeline_entries={len(state.get('timeline', []))}"
+    )
     await _emit_event(config, event_type="node_start", node=node_name)
 
     llm = _get_llm(config).with_structured_output(TimelinePlannerOutput)
@@ -100,6 +107,15 @@ async def timeline_planner_node(
             ),
         ]
     )
+    _trace(
+        "thinking="
+        + json.dumps(
+            {
+                "timeline": [entry.model_dump() for entry in result.timeline],
+                "timeline_notes": result.timeline_notes,
+            }
+        )
+    )
 
     logger.info(
         "[%s] Completed session=%s timeline_entries=%d",
@@ -113,6 +129,7 @@ async def timeline_planner_node(
         node=node_name,
         payload={"timeline_entries": len(result.timeline)},
     )
+    _trace(f"complete timeline_entries={len(result.timeline)}")
     return {
         "timeline": [entry.model_dump() for entry in result.timeline],
         "timeline_notes": result.timeline_notes,

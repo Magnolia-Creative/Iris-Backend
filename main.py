@@ -13,7 +13,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
-from app.graph.runtime import resume_session_from_reprompt, run_session_until_pause
+from app.graph.runtime import (
+    approve_session_timeline,
+    get_session_state,
+    resume_session_from_reprompt,
+    run_session_until_pause,
+)
 from app.services.session_ingest import ingest_session_clips
 from app.services.session_state_builder import build_initial_state_from_session_payload
 from app.services.transcript_store import get_persisted_session_data
@@ -57,6 +62,19 @@ class WebSocketSessionStartPayload(BaseModel):
 class WebSocketRepromptPayload(BaseModel):
     type: Literal["reprompt"]
     prompt: str
+
+
+def _is_timeline_approval_message(prompt: str) -> bool:
+    normalized = " ".join(prompt.lower().strip().split())
+    rejection_markers = {"do not approve", "don't approve", "not approved", "reject", "decline"}
+    if any(marker in normalized for marker in rejection_markers):
+        return False
+
+    if normalized in {"yes", "yep", "yeah", "ok", "okay"}:
+        return True
+
+    approval_markers = {"approve", "approved", "looks good", "go ahead", "ship it"}
+    return any(marker in normalized for marker in approval_markers)
 
 
 @asynccontextmanager
@@ -151,6 +169,17 @@ async def session_websocket(
             message_type = raw_message.get("type")
             if message_type == "reprompt":
                 reprompt_payload = WebSocketRepromptPayload.model_validate(raw_message)
+                current_state = get_session_state(str(session_id))
+                if (
+                    current_state
+                    and current_state.get("waiting_for_user")
+                    and _is_timeline_approval_message(reprompt_payload.prompt)
+                ):
+                    await approve_session_timeline(
+                        session_id=str(session_id),
+                        event_handler=send_event,
+                    )
+                    continue
                 await resume_session_from_reprompt(
                     session_id=str(session_id),
                     prompt=reprompt_payload.prompt,

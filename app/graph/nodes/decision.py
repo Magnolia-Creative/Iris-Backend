@@ -12,6 +12,10 @@ from app.graph.state import DecisionAgentOutput, SessionGraphState
 logger = logging.getLogger(__name__)
 
 
+def _trace(message: str) -> None:
+    print(f"[TRACE][decision_agent] {message}", flush=True)
+
+
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
     if not config:
         return {}
@@ -69,6 +73,10 @@ async def decision_agent_node(
 ) -> dict[str, Any]:
     node_name = "decision_agent"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
+    _trace(
+        f"start session={state.get('session_id')} iteration={state.get('iteration_count', 0)} "
+        f"clips={len(state.get('clips', []))}"
+    )
     await _emit_event(config, event_type="node_start", node=node_name)
 
     llm = _get_llm(config).with_structured_output(DecisionAgentOutput)
@@ -104,6 +112,17 @@ async def decision_agent_node(
     result = await llm.ainvoke(messages)
     notes = list(state.get("notes", []))
     notes.extend(result.reasoning_notes)
+    _trace(
+        "thinking="
+        + json.dumps(
+            {
+                "next_action": result.next_action,
+                "retrieval_plan": result.retrieval_plan.model_dump(),
+                "edit_plan": result.edit_plan.model_dump(),
+                "reasoning_notes": result.reasoning_notes,
+            }
+        )
+    )
 
     payload = result.model_dump()
     logger.info(
@@ -118,6 +137,7 @@ async def decision_agent_node(
         node=node_name,
         payload={"next_action": result.next_action},
     )
+    _trace(f"complete next_action={result.next_action}")
     return {
         "next_action": result.next_action,
         "retrieval_plan": result.retrieval_plan.model_dump(),

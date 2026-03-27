@@ -15,6 +15,12 @@ def _route_from_decision(state: SessionGraphState) -> str:
     if next_action == "hydrate_transcripts":
         return "hydrate_transcripts"
     if next_action == "clip_cleanup":
+        cleanup_plan = state.get("cleanup_plan") or {}
+        has_cleanup_output = bool(
+            cleanup_plan.get("trim_suggestions") or cleanup_plan.get("selected_clip_ids")
+        )
+        if has_cleanup_output:
+            return "timeline_planner"
         return "clip_cleanup"
     if next_action == "timeline_planner":
         return "timeline_planner"

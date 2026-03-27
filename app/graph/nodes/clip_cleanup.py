@@ -13,6 +13,10 @@ from app.services.transcript_cache import get_cached_transcript
 logger = logging.getLogger(__name__)
 
 
+def _trace(message: str) -> None:
+    print(f"[TRACE][clip_cleanup] {message}", flush=True)
+
+
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
     if not config:
         return {}
@@ -70,6 +74,9 @@ async def clip_cleanup_node(
 ) -> dict[str, Any]:
     node_name = "clip_cleanup"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
+    _trace(
+        f"start session={state.get('session_id')} prompt={state.get('user_prompt', '')!r}"
+    )
     await _emit_event(config, event_type="node_start", node=node_name)
 
     llm = _get_llm(config).with_structured_output(ClipCleanupOutput)
@@ -99,6 +106,17 @@ async def clip_cleanup_node(
         edit_plan["target_clips"] = result.selected_clip_ids
     notes = list(state.get("notes", []))
     notes.extend(result.cleanup_notes)
+    _trace(
+        "thinking="
+        + json.dumps(
+            {
+                "selected_clip_ids": result.selected_clip_ids,
+                "dropped_clip_ids": result.dropped_clip_ids,
+                "trim_suggestions": [s.model_dump() for s in result.trim_suggestions],
+                "cleanup_notes": result.cleanup_notes,
+            }
+        )
+    )
 
     logger.info(
         "[%s] Completed session=%s selected=%d dropped=%d",
@@ -115,6 +133,9 @@ async def clip_cleanup_node(
             "selected_clip_ids": result.selected_clip_ids,
             "dropped_clip_ids": result.dropped_clip_ids,
         },
+    )
+    _trace(
+        f"complete selected={len(result.selected_clip_ids)} dropped={len(result.dropped_clip_ids)}"
     )
     return {
         "cleanup_plan": cleanup_plan,

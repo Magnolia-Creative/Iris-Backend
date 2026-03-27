@@ -9,6 +9,10 @@ from app.graph.state import SessionGraphState, TimelineValidationResult, Validat
 logger = logging.getLogger(__name__)
 
 
+def _trace(message: str) -> None:
+    print(f"[TRACE][timeline_validator] {message}", flush=True)
+
+
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
     if not config:
         return {}
@@ -94,6 +98,9 @@ async def timeline_validator_node(
 ) -> dict[str, Any]:
     node_name = "timeline_validator"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
+    _trace(
+        f"start session={state.get('session_id')} proposed_entries={len(state.get('timeline', []))}"
+    )
     await _emit_event(config, event_type="node_start", node=node_name)
 
     result = _validate_timeline(state)
@@ -101,6 +108,11 @@ async def timeline_validator_node(
     notes.extend(result.validation_notes)
     errors = list(state.get("errors", []))
     errors.extend(result.validation_errors)
+    _trace(
+        f"thinking is_valid={result.is_valid} "
+        f"normalized_entries={len(result.normalized_timeline)} "
+        f"errors={result.validation_errors}"
+    )
 
     logger.info(
         "[%s] Completed session=%s valid=%s entries=%d",
@@ -118,6 +130,7 @@ async def timeline_validator_node(
             "validation_errors": result.validation_errors,
         },
     )
+    _trace(f"complete waiting_for_user={result.is_valid}")
     return {
         "timeline": [entry.model_dump() for entry in result.normalized_timeline],
         "waiting_for_user": result.is_valid,

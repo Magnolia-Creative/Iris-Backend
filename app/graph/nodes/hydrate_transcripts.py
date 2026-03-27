@@ -12,6 +12,10 @@ from app.services.transcript_store import get_transcript_payload
 logger = logging.getLogger(__name__)
 
 
+def _trace(message: str) -> None:
+    print(f"[TRACE][hydrate_transcripts] {message}", flush=True)
+
+
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
     if not config:
         return {}
@@ -44,11 +48,13 @@ async def hydrate_transcripts_node(
 ) -> dict[str, Any]:
     node_name = "hydrate_transcripts"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
+    _trace(f"start session={state.get('session_id')}")
     await _emit_event(config, event_type="node_start", node=node_name)
 
     db = _get_db(config)
     session_id = state["session_id"]
     requested_clip_ids = set((state.get("retrieval_plan") or {}).get("clip_ids") or [])
+    _trace(f"requested_clip_ids={sorted(requested_clip_ids)}")
     updated_clips: list[dict[str, Any]] = []
     hydrated_clip_ids: list[str] = []
     notes = list(state.get("notes", []))
@@ -84,6 +90,7 @@ async def hydrate_transcripts_node(
 
     if hydrated_clip_ids:
         notes.append(f"Hydrated transcripts for clips: {', '.join(hydrated_clip_ids)}")
+    _trace(f"hydrated_clip_ids={hydrated_clip_ids}")
 
     logger.info(
         "[%s] Completed session=%s hydrated=%d",
@@ -97,6 +104,7 @@ async def hydrate_transcripts_node(
         node=node_name,
         payload={"hydrated_clip_ids": hydrated_clip_ids},
     )
+    _trace("complete")
     return {
         "clips": updated_clips,
         "notes": notes,
