@@ -23,13 +23,37 @@ class Project(Base):
     )
 
 
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    clips: Mapped[list["Clip"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
 class Clip(Base):
     __tablename__ = "clips"
-    __table_args__ = (Index("idx_clips_project_id", "project_id"),)
+    __table_args__ = (
+        Index("idx_clips_project_id", "project_id"),
+        Index("idx_clips_session_id", "session_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=True
     )
 
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -52,6 +76,7 @@ class Clip(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="clips")
+    session: Mapped["Session | None"] = relationship(back_populates="clips")
     transcript: Mapped["Transcript | None"] = relationship(
         back_populates="clip", uselist=False, cascade="all, delete-orphan", passive_deletes=True
     )
