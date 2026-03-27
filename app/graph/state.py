@@ -55,6 +55,7 @@ class SessionGraphState(TypedDict, total=False):
     timeline: NotRequired[list[TimelineEntry]]
     timeline_notes: NotRequired[list[str]]
     waiting_for_user: bool
+    force_reconsider: NotRequired[bool]
     iteration_count: int
     notes: list[str]
     errors: list[str]

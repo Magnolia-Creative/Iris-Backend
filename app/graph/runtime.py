@@ -32,6 +32,20 @@ def set_session_state(session_id: str, state: SessionGraphState) -> None:
     _session_store[session_id] = state
 
 
+def _is_finish_prompt(prompt: str) -> bool:
+    return " ".join(prompt.lower().strip().split()) == "finish"
+
+
+def _reset_llm_artifacts_for_reprompt(state: SessionGraphState) -> SessionGraphState:
+    # Preserve prior planning artifacts so a re-prompt can modify only part of the current
+    # draft instead of forcing a full restart. Nodes can still overwrite these fields.
+    refreshed_state: SessionGraphState = {
+        **state,
+        "next_action": None,
+    }
+    return refreshed_state
+
+
 async def run_session_until_pause(
     *,
     state: SessionGraphState,
@@ -108,16 +122,28 @@ async def resume_session_from_reprompt(
     event_handler: SessionEventHandler,
     llm: Any | None = None,
 ) -> SessionGraphState:
+    if _is_finish_prompt(prompt):
+        return await approve_session_timeline(
+            session_id=session_id,
+            db=db,
+            event_handler=event_handler,
+        )
+
     state = _session_store.get(session_id)
     if state is None:
         raise KeyError(f"Unknown session_id: {session_id}")
 
     resumed_state: SessionGraphState = {
-        **state,
+        **_reset_llm_artifacts_for_reprompt(state),
         "user_prompt": prompt,
         "waiting_for_user": False,
+        "force_reconsider": True,
         "iteration_count": int(state.get("iteration_count", 0)) + 1,
-        "notes": list(state.get("notes", [])) + ["Resumed from user re-prompt."],
+        "notes": list(state.get("notes", []))
+        + [
+            "Resumed from user re-prompt.",
+            "Preserve unaffected prior timeline/content unless the user asks for a full overhaul.",
+        ],
     }
     logger.info("[runtime] Resuming session=%s iteration=%s", session_id, resumed_state["iteration_count"])
     _trace(
@@ -153,6 +179,7 @@ async def approve_session_timeline(
         **state,
         "waiting_for_user": False,
         "next_action": "finish",
+        "force_reconsider": False,
         "notes": list(state.get("notes", [])) + ["User approved proposed timeline."],
     }
     _session_store[session_id] = approved_state

@@ -80,6 +80,7 @@ async def decision_agent_node(
     await _emit_event(config, event_type="node_start", node=node_name)
 
     llm = _get_llm(config).with_structured_output(DecisionAgentOutput)
+    force_reconsider = bool(state.get("force_reconsider"))
     messages = [
         (
             "system",
@@ -98,49 +99,63 @@ async def decision_agent_node(
             f"Existing cleanup plan: {json.dumps(state.get('cleanup_plan'))}\n"
             f"Existing timeline: {json.dumps(state.get('timeline'))}\n"
             f"Timeline notes: {json.dumps(state.get('timeline_notes'))}\n"
+            f"Force reconsider: {force_reconsider}\n"
             f"Notes: {json.dumps(state.get('notes', []))}\n"
             f"Errors: {json.dumps(state.get('errors', []))}\n"
             "Use one of these next_action values only: hydrate_transcripts, clip_cleanup, "
             "timeline_planner, finish.\n"
+            "When Iteration count > 0, treat Existing timeline/cleanup/edit plans as the current "
+            "draft baseline. Determine whether the user's prompt implies: (a) full overhaul of the "
+            "draft, or (b) targeted updates to only specific parts.\n"
+            "Default to targeted updates unless the user explicitly asks to replace everything. "
+            "For targeted updates, preserve unaffected prior sections and choose the next action "
+            "that edits only the requested portion.\n"
             "Choose hydrate_transcripts when clip summaries are not enough and transcript "
             "detail is needed for better editorial decisions. Choose clip_cleanup when "
             "semantic filtering or trim suggestions are needed. Choose timeline_planner "
             "when there is enough context to assemble the timeline. Choose finish only "
-            "if the workflow should stop without further changes.",
+            "if the workflow should stop without further changes.\n"
+            "If Force reconsider is true, you must not choose finish on this turn; "
+            "select the best non-finish action to reevaluate the user's latest request.",
         ),
     ]
     result = await llm.ainvoke(messages)
+    next_action = result.next_action
+    if force_reconsider and next_action == "finish":
+        next_action = "timeline_planner"
+        result.reasoning_notes.append(
+            "Forced reconsider was active, so finish was overridden to timeline_planner."
+        )
     notes = list(state.get("notes", []))
     notes.extend(result.reasoning_notes)
     _trace(
         "thinking="
         + json.dumps(
             {
-                "next_action": result.next_action,
+                "next_action": next_action,
                 "retrieval_plan": result.retrieval_plan.model_dump(),
                 "edit_plan": result.edit_plan.model_dump(),
                 "reasoning_notes": result.reasoning_notes,
             }
         )
     )
-
-    payload = result.model_dump()
     logger.info(
         "[%s] Completed session=%s next_action=%s",
         node_name,
         state.get("session_id"),
-        result.next_action,
+        next_action,
     )
     await _emit_event(
         config,
         event_type="node_complete",
         node=node_name,
-        payload={"next_action": result.next_action},
+        payload={"next_action": next_action},
     )
-    _trace(f"complete next_action={result.next_action}")
+    _trace(f"complete next_action={next_action}")
     return {
-        "next_action": result.next_action,
+        "next_action": next_action,
         "retrieval_plan": result.retrieval_plan.model_dump(),
         "edit_plan": result.edit_plan.model_dump(),
+        "force_reconsider": False,
         "notes": notes,
     }

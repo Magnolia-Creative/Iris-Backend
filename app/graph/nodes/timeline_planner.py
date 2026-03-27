@@ -58,7 +58,7 @@ async def _timeline_context(state: SessionGraphState) -> list[dict[str, Any]]:
         if cache_key:
             cached = await get_cached_transcript(cache_key)
             if isinstance(cached, dict):
-                transcript_excerpt = str(cached.get("full_text") or "")[:1500]
+                transcript_excerpt = str(cached.get("full_text") or "")
         context.append(
             {
                 "clip_id": clip.get("clip_id"),
@@ -98,11 +98,16 @@ async def timeline_planner_node(
                 "human",
                 "Construct the next proposed timeline.\n"
                 f"User prompt: {state.get('user_prompt', '')}\n"
+                f"Iteration count: {state.get('iteration_count', 0)}\n"
                 f"Edit plan: {json.dumps(state.get('edit_plan'))}\n"
                 f"Cleanup plan: {json.dumps(state.get('cleanup_plan'))}\n"
                 f"Prior timeline: {json.dumps(state.get('timeline'))}\n"
                 f"Notes: {json.dumps(state.get('notes', []))}\n"
                 f"Clip context: {json.dumps(await _timeline_context(state))}\n"
+                "If iteration count > 0, determine whether the prompt requests a full overhaul or "
+                "a targeted adjustment of the prior timeline. Default to targeted adjustment unless "
+                "the user explicitly requests replacing everything. For targeted adjustments, keep "
+                "unchanged timeline entries from Prior timeline and modify only the requested part.\n"
                 "Produce the proposed sequence, choosing clips, in/out points, and rationale.",
             ),
         ]
