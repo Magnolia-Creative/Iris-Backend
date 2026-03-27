@@ -168,7 +168,23 @@ async def session_websocket(
             raw_message = await websocket.receive_json()
             message_type = raw_message.get("type")
             if message_type == "reprompt":
-                reprompt_payload = WebSocketRepromptPayload.model_validate(raw_message)
+                try:
+                    reprompt_payload = WebSocketRepromptPayload.model_validate(raw_message)
+                except ValidationError as exc:
+                    logger.warning(
+                        "[ws] Invalid reprompt payload for session=%s payload=%s",
+                        session_id,
+                        raw_message,
+                    )
+                    await send_event(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "detail": "Invalid reprompt payload. Use {'type':'reprompt','prompt':'...'}",
+                            "errors": exc.errors(),
+                        }
+                    )
+                    continue
                 current_state = get_session_state(str(session_id))
                 if (
                     current_state
