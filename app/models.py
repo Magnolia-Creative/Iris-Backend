@@ -35,6 +35,7 @@ class Session(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    graph_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     clips: Mapped[list["Clip"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", passive_deletes=True

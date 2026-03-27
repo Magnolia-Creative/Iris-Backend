@@ -18,7 +18,9 @@ from app.graph.runtime import (
     get_session_state,
     resume_session_from_reprompt,
     run_session_until_pause,
+    set_session_state,
 )
+from app.services.session_graph_state_store import get_persisted_session_graph_state
 from app.services.session_ingest import ingest_session_clips
 from app.services.session_state_builder import build_initial_state_from_session_payload
 from app.services.transcript_store import get_persisted_session_data
@@ -158,11 +160,46 @@ async def session_websocket(
                 "uploaded_count": persisted_session_data["uploaded_count"],
             }
         )
-        await run_session_until_pause(
-            state=initial_state,
-            db=db,
-            event_handler=send_event,
-        )
+        persisted_graph_state = await get_persisted_session_graph_state(db=db, session_id=session_id)
+        if persisted_graph_state is not None:
+            set_session_state(str(session_id), persisted_graph_state)
+            if persisted_graph_state.get("waiting_for_user"):
+                await send_event(
+                    {
+                        "type": "timeline_update",
+                        "session_id": session_id,
+                        "timeline": persisted_graph_state.get("timeline", []),
+                        "timeline_notes": persisted_graph_state.get("timeline_notes", []),
+                    }
+                )
+                await send_event(
+                    {
+                        "type": "waiting_for_user",
+                        "session_id": session_id,
+                        "project_id": persisted_graph_state.get("project_id"),
+                    }
+                )
+            elif persisted_graph_state.get("next_action") == "finish":
+                await send_event(
+                    {
+                        "type": "session_complete",
+                        "session_id": session_id,
+                        "project_id": persisted_graph_state.get("project_id"),
+                        "timeline": persisted_graph_state.get("timeline", []),
+                    }
+                )
+            else:
+                await run_session_until_pause(
+                    state=persisted_graph_state,
+                    db=db,
+                    event_handler=send_event,
+                )
+        else:
+            await run_session_until_pause(
+                state=initial_state,
+                db=db,
+                event_handler=send_event,
+            )
 
         while True:
             raw_message = await websocket.receive_json()
@@ -193,6 +230,7 @@ async def session_websocket(
                 ):
                     await approve_session_timeline(
                         session_id=str(session_id),
+                        db=db,
                         event_handler=send_event,
                     )
                     continue
