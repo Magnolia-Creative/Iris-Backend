@@ -53,7 +53,7 @@ async def hydrate_transcripts_node(
         config,
         event_type="node_start",
         node=node_name,
-        payload={"status_message": "Fetching transcript details for the selected clips."},
+        payload={"status_message": "Analyzing audio."},
     )
 
     db = _get_db(config)
@@ -109,11 +109,7 @@ async def hydrate_transcripts_node(
         node=node_name,
         payload={
             "hydrated_clip_ids": hydrated_clip_ids,
-            "status_message": (
-                "Transcript hydration complete."
-                if hydrated_clip_ids
-                else "Transcript hydration complete with no new clips fetched."
-            ),
+            "status_message": "Audio analysis complete.",
         },
     )
     _trace("complete")
@@ -121,11 +117,7 @@ async def hydrate_transcripts_node(
         "clips": updated_clips,
         "notes": notes,
         "next_action": None,
-        "status_message": (
-            "Transcript hydration complete."
-            if hydrated_clip_ids
-            else "Transcript hydration complete with no new clips fetched."
-        ),
+        "status_message": "Audio analysis complete.",
         "status_details": {
             "node": node_name,
             "hydrated_clip_ids": hydrated_clip_ids,

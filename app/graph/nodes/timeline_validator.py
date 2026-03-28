@@ -105,7 +105,7 @@ async def timeline_validator_node(
         config,
         event_type="node_start",
         node=node_name,
-        payload={"status_message": "Validating timeline clip bounds and durations."},
+        payload={"status_message": "Checking timeline."},
     )
 
     result = _validate_timeline(state)
@@ -134,9 +134,9 @@ async def timeline_validator_node(
             "is_valid": result.is_valid,
             "validation_errors": result.validation_errors,
             "status_message": (
-                "Timeline validation passed; waiting for your approval."
+                "Timeline ready for review."
                 if result.is_valid
-                else "Timeline validation found issues; revising timeline."
+                else "Refining timeline."
             ),
         },
     )
@@ -148,9 +148,9 @@ async def timeline_validator_node(
         "errors": errors,
         "next_action": "finish" if result.is_valid else "timeline_planner",
         "status_message": (
-            "Timeline validation passed; waiting for your approval."
+            "Timeline ready for review."
             if result.is_valid
-            else "Timeline validation found issues; revising timeline."
+            else "Refining timeline."
         ),
         "status_details": {
             "node": node_name,

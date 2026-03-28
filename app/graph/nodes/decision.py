@@ -81,7 +81,7 @@ async def decision_agent_node(
         config,
         event_type="node_start",
         node=node_name,
-        payload={"status_message": "Reviewing your request and deciding the next workflow step."},
+        payload={"status_message": "Understanding request."},
     )
 
     llm = _get_llm(config).with_structured_output(DecisionAgentOutput)
@@ -156,7 +156,7 @@ async def decision_agent_node(
         node=node_name,
         payload={
             "next_action": next_action,
-            "status_message": f"Decision complete: next step is {next_action}.",
+            "status_message": "Planning update ready.",
         },
     )
     _trace(f"complete next_action={next_action}")
@@ -166,7 +166,7 @@ async def decision_agent_node(
         "edit_plan": result.edit_plan.model_dump(),
         "force_reconsider": False,
         "notes": notes,
-        "status_message": f"Decision complete: next step is {next_action}.",
+        "status_message": "Planning update ready.",
         "status_details": {
             "node": node_name,
             "next_action": next_action,

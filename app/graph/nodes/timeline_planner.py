@@ -87,7 +87,7 @@ async def timeline_planner_node(
         config,
         event_type="node_start",
         node=node_name,
-        payload={"status_message": "Building the proposed timeline from selected clips and trim guidance."},
+        payload={"status_message": "Updating timeline."},
     )
 
     llm = _get_llm(config).with_structured_output(TimelinePlannerOutput)
@@ -139,7 +139,7 @@ async def timeline_planner_node(
         node=node_name,
         payload={
             "timeline_entries": len(result.timeline),
-            "status_message": f"Timeline planning complete with {len(result.timeline)} proposed segment(s).",
+            "status_message": "Timeline updated.",
         },
     )
     _trace(f"complete timeline_entries={len(result.timeline)}")
@@ -147,7 +147,7 @@ async def timeline_planner_node(
         "timeline": [entry.model_dump() for entry in result.timeline],
         "timeline_notes": result.timeline_notes,
         "next_action": None,
-        "status_message": f"Timeline planning complete with {len(result.timeline)} proposed segment(s).",
+        "status_message": "Timeline updated.",
         "status_details": {
             "node": node_name,
             "timeline_entries": len(result.timeline),

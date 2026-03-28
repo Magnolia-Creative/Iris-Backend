@@ -227,9 +227,7 @@ async def clip_cleanup_node(
         event_type="node_start",
         node=node_name,
         payload={
-            "status_message": (
-                "Analyzing selected clips to determine what to keep, trim, or drop."
-            ),
+            "status_message": "Cleaning up clips.",
             "input_clips": target_clips,
         },
     )
@@ -296,11 +294,7 @@ async def clip_cleanup_node(
             "selected_clip_ids": result.selected_clip_ids,
             "dropped_clip_ids": result.dropped_clip_ids,
             "clip_ranges": grouped_trim_ranges,
-            "status_message": (
-                f"Clip cleanup complete: selected {len(result.selected_clip_ids)} clip(s), "
-                f"dropped {len(result.dropped_clip_ids)} clip(s), "
-                f"with {len(result.trim_suggestions)} extracted segment(s)."
-            ),
+            "status_message": "Clip cleanup complete.",
         },
     )
     _trace(
@@ -311,11 +305,7 @@ async def clip_cleanup_node(
         "edit_plan": edit_plan,
         "notes": notes,
         "next_action": None,
-        "status_message": (
-            f"Clip cleanup complete: selected {len(result.selected_clip_ids)} clip(s), "
-            f"dropped {len(result.dropped_clip_ids)} clip(s), "
-            f"with {len(result.trim_suggestions)} extracted segment(s)."
-        ),
+        "status_message": "Clip cleanup complete.",
         "status_details": {
             "node": node_name,
             "selected_clip_ids": result.selected_clip_ids,
