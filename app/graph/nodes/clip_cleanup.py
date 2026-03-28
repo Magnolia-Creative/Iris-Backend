@@ -200,13 +200,68 @@ def _group_trim_ranges_by_clip(result: ClipCleanupOutput) -> list[dict[str, Any]
             }
         )
 
-    return [
-        {
-            "clip_id": clip_id,
-            "ranges": ranges,
-        }
-        for clip_id, ranges in grouped_ranges.items()
-    ]
+    return [{"clip_id": clip_id, "ranges": ranges} for clip_id, ranges in grouped_ranges.items()]
+
+
+def _clip_duration_lookup(state: SessionGraphState) -> dict[str, float | None]:
+    lookup: dict[str, float | None] = {}
+    for clip in state.get("clips", []):
+        clip_id = str(clip.get("clip_id") or "")
+        if not clip_id:
+            continue
+        metadata = clip.get("metadata") if isinstance(clip.get("metadata"), dict) else {}
+        duration = metadata.get("duration_seconds")
+        lookup[clip_id] = float(duration) if isinstance(duration, (int, float)) else None
+    return lookup
+
+
+def _is_clip_changed(
+    *,
+    ranges: list[dict[str, Any]],
+    duration_sec: float | None,
+    tolerance_sec: float = 0.05,
+) -> bool:
+    if not ranges:
+        return False
+    if len(ranges) != 1:
+        return True
+    if duration_sec is None:
+        return True
+
+    clip_range = ranges[0]
+    in_sec = clip_range.get("in_sec")
+    out_sec = clip_range.get("out_sec")
+    if not isinstance(in_sec, (int, float)) or not isinstance(out_sec, (int, float)):
+        return True
+
+    starts_at_zero = abs(float(in_sec)) <= tolerance_sec
+    covers_full_duration = float(out_sec) >= (duration_sec - tolerance_sec)
+    return not (starts_at_zero and covers_full_duration)
+
+
+def _build_clip_ranges_with_change_flag(
+    state: SessionGraphState, result: ClipCleanupOutput
+) -> list[dict[str, Any]]:
+    grouped_range_list = _group_trim_ranges_by_clip(result)
+    ranges_by_clip = {entry["clip_id"]: entry["ranges"] for entry in grouped_range_list}
+    duration_lookup = _clip_duration_lookup(state)
+
+    clip_ranges: list[dict[str, Any]] = []
+    for clip_id in result.selected_clip_ids:
+        clip_key = str(clip_id)
+        ranges = ranges_by_clip.get(clip_key, [])
+        changed = _is_clip_changed(
+            ranges=ranges,
+            duration_sec=duration_lookup.get(clip_key),
+        )
+        clip_ranges.append(
+            {
+                "clip_id": clip_key,
+                "changed": changed,
+                "ranges": ranges if changed else [],
+            }
+        )
+    return clip_ranges
 
 
 async def clip_cleanup_node(
@@ -262,7 +317,7 @@ async def clip_cleanup_node(
         edit_plan["target_clips"] = result.selected_clip_ids
     notes = list(state.get("notes", []))
     notes.extend(result.cleanup_notes)
-    grouped_trim_ranges = _group_trim_ranges_by_clip(result)
+    grouped_trim_ranges = _build_clip_ranges_with_change_flag(state, result)
     _trace(
         "thinking="
         + json.dumps(
