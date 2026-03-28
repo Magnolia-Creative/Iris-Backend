@@ -77,7 +77,12 @@ async def decision_agent_node(
         f"start session={state.get('session_id')} iteration={state.get('iteration_count', 0)} "
         f"clips={len(state.get('clips', []))}"
     )
-    await _emit_event(config, event_type="node_start", node=node_name)
+    await _emit_event(
+        config,
+        event_type="node_start",
+        node=node_name,
+        payload={"status_message": "Reviewing your request and deciding the next workflow step."},
+    )
 
     llm = _get_llm(config).with_structured_output(DecisionAgentOutput)
     force_reconsider = bool(state.get("force_reconsider"))
@@ -149,7 +154,10 @@ async def decision_agent_node(
         config,
         event_type="node_complete",
         node=node_name,
-        payload={"next_action": next_action},
+        payload={
+            "next_action": next_action,
+            "status_message": f"Decision complete: next step is {next_action}.",
+        },
     )
     _trace(f"complete next_action={next_action}")
     return {
@@ -158,4 +166,10 @@ async def decision_agent_node(
         "edit_plan": result.edit_plan.model_dump(),
         "force_reconsider": False,
         "notes": notes,
+        "status_message": f"Decision complete: next step is {next_action}.",
+        "status_details": {
+            "node": node_name,
+            "next_action": next_action,
+            "reasoning_notes": result.reasoning_notes,
+        },
     }

@@ -166,6 +166,53 @@ async def _clip_context(state: SessionGraphState) -> list[dict[str, Any]]:
     return clip_context
 
 
+def _resolve_cleanup_target_clips(state: SessionGraphState) -> list[dict[str, Any]]:
+    clip_index: dict[str, dict[str, Any]] = {}
+    for clip in state.get("clips", []):
+        clip_id = str(clip.get("clip_id") or "")
+        if not clip_id:
+            continue
+        clip_index[clip_id] = {
+            "clip_id": clip_id,
+            "summary": clip.get("summary"),
+            "metadata": clip.get("metadata", {}),
+        }
+
+    requested_ids = (state.get("edit_plan") or {}).get("target_clips") or []
+    if not requested_ids:
+        requested_ids = (state.get("retrieval_plan") or {}).get("clip_ids") or []
+
+    normalized_requested = [str(clip_id) for clip_id in requested_ids if str(clip_id) in clip_index]
+    if normalized_requested:
+        return [clip_index[clip_id] for clip_id in normalized_requested]
+
+    return list(clip_index.values())
+
+
+def _group_trim_ranges_by_clip(result: ClipCleanupOutput) -> list[dict[str, Any]]:
+    grouped_ranges: dict[str, list[dict[str, Any]]] = {}
+    for suggestion in result.trim_suggestions:
+        suggestion_data = suggestion.model_dump()
+        clip_id = str(suggestion_data.get("clip_id") or "")
+        if not clip_id:
+            continue
+        grouped_ranges.setdefault(clip_id, []).append(
+            {
+                "in_sec": suggestion_data.get("in_sec"),
+                "out_sec": suggestion_data.get("out_sec"),
+                "reason": suggestion_data.get("reason"),
+            }
+        )
+
+    return [
+        {
+            "clip_id": clip_id,
+            "ranges": ranges,
+        }
+        for clip_id, ranges in grouped_ranges.items()
+    ]
+
+
 async def clip_cleanup_node(
     state: SessionGraphState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
@@ -174,7 +221,18 @@ async def clip_cleanup_node(
     _trace(
         f"start session={state.get('session_id')} prompt={state.get('user_prompt', '')!r}"
     )
-    await _emit_event(config, event_type="node_start", node=node_name)
+    target_clips = _resolve_cleanup_target_clips(state)
+    await _emit_event(
+        config,
+        event_type="node_start",
+        node=node_name,
+        payload={
+            "status_message": (
+                "Analyzing selected clips to determine what to keep, trim, or drop."
+            ),
+            "input_clips": target_clips,
+        },
+    )
 
     llm = _get_llm(config).with_structured_output(ClipCleanupOutput)
     result = await llm.ainvoke(
@@ -210,6 +268,7 @@ async def clip_cleanup_node(
         edit_plan["target_clips"] = result.selected_clip_ids
     notes = list(state.get("notes", []))
     notes.extend(result.cleanup_notes)
+    grouped_trim_ranges = _group_trim_ranges_by_clip(result)
     _trace(
         "thinking="
         + json.dumps(
@@ -236,6 +295,12 @@ async def clip_cleanup_node(
         payload={
             "selected_clip_ids": result.selected_clip_ids,
             "dropped_clip_ids": result.dropped_clip_ids,
+            "clip_ranges": grouped_trim_ranges,
+            "status_message": (
+                f"Clip cleanup complete: selected {len(result.selected_clip_ids)} clip(s), "
+                f"dropped {len(result.dropped_clip_ids)} clip(s), "
+                f"with {len(result.trim_suggestions)} extracted segment(s)."
+            ),
         },
     )
     _trace(
@@ -246,4 +311,16 @@ async def clip_cleanup_node(
         "edit_plan": edit_plan,
         "notes": notes,
         "next_action": None,
+        "status_message": (
+            f"Clip cleanup complete: selected {len(result.selected_clip_ids)} clip(s), "
+            f"dropped {len(result.dropped_clip_ids)} clip(s), "
+            f"with {len(result.trim_suggestions)} extracted segment(s)."
+        ),
+        "status_details": {
+            "node": node_name,
+            "selected_clip_ids": result.selected_clip_ids,
+            "dropped_clip_ids": result.dropped_clip_ids,
+            "clip_ranges": grouped_trim_ranges,
+            "input_clips": target_clips,
+        },
     }

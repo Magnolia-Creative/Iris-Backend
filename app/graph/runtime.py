@@ -62,6 +62,7 @@ async def run_session_until_pause(
     )
 
     latest_state = state
+    last_status_fingerprint: tuple[str, str] | None = None
     config = {
         "configurable": {
             "db": db,
@@ -71,6 +72,26 @@ async def run_session_until_pause(
     }
     async for graph_state in graph.astream(state, config=config, stream_mode="values"):
         latest_state = graph_state
+        status_message = str(latest_state.get("status_message") or "").strip()
+        status_details = latest_state.get("status_details")
+        if status_message:
+            node_name = (
+                str(status_details.get("node"))
+                if isinstance(status_details, dict) and status_details.get("node")
+                else "unknown"
+            )
+            fingerprint = (node_name, status_message)
+            if fingerprint != last_status_fingerprint:
+                await event_handler(
+                    {
+                        "type": "status_update",
+                        "session_id": session_id,
+                        "node": node_name,
+                        "status_message": status_message,
+                        "status_details": status_details if isinstance(status_details, dict) else {},
+                    }
+                )
+                last_status_fingerprint = fingerprint
         _trace(
             "graph_state_update "
             f"next_action={latest_state.get('next_action')} "

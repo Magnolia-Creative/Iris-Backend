@@ -83,7 +83,12 @@ async def timeline_planner_node(
     _trace(
         f"start session={state.get('session_id')} prior_timeline_entries={len(state.get('timeline', []))}"
     )
-    await _emit_event(config, event_type="node_start", node=node_name)
+    await _emit_event(
+        config,
+        event_type="node_start",
+        node=node_name,
+        payload={"status_message": "Building the proposed timeline from selected clips and trim guidance."},
+    )
 
     llm = _get_llm(config).with_structured_output(TimelinePlannerOutput)
     result = await llm.ainvoke(
@@ -132,11 +137,19 @@ async def timeline_planner_node(
         config,
         event_type="node_complete",
         node=node_name,
-        payload={"timeline_entries": len(result.timeline)},
+        payload={
+            "timeline_entries": len(result.timeline),
+            "status_message": f"Timeline planning complete with {len(result.timeline)} proposed segment(s).",
+        },
     )
     _trace(f"complete timeline_entries={len(result.timeline)}")
     return {
         "timeline": [entry.model_dump() for entry in result.timeline],
         "timeline_notes": result.timeline_notes,
         "next_action": None,
+        "status_message": f"Timeline planning complete with {len(result.timeline)} proposed segment(s).",
+        "status_details": {
+            "node": node_name,
+            "timeline_entries": len(result.timeline),
+        },
     }

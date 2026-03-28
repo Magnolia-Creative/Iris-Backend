@@ -49,7 +49,12 @@ async def hydrate_transcripts_node(
     node_name = "hydrate_transcripts"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
     _trace(f"start session={state.get('session_id')}")
-    await _emit_event(config, event_type="node_start", node=node_name)
+    await _emit_event(
+        config,
+        event_type="node_start",
+        node=node_name,
+        payload={"status_message": "Fetching transcript details for the selected clips."},
+    )
 
     db = _get_db(config)
     session_id = state["session_id"]
@@ -102,11 +107,28 @@ async def hydrate_transcripts_node(
         config,
         event_type="node_complete",
         node=node_name,
-        payload={"hydrated_clip_ids": hydrated_clip_ids},
+        payload={
+            "hydrated_clip_ids": hydrated_clip_ids,
+            "status_message": (
+                "Transcript hydration complete."
+                if hydrated_clip_ids
+                else "Transcript hydration complete with no new clips fetched."
+            ),
+        },
     )
     _trace("complete")
     return {
         "clips": updated_clips,
         "notes": notes,
         "next_action": None,
+        "status_message": (
+            "Transcript hydration complete."
+            if hydrated_clip_ids
+            else "Transcript hydration complete with no new clips fetched."
+        ),
+        "status_details": {
+            "node": node_name,
+            "hydrated_clip_ids": hydrated_clip_ids,
+            "requested_clip_ids": sorted(requested_clip_ids),
+        },
     }

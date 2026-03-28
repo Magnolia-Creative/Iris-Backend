@@ -101,7 +101,12 @@ async def timeline_validator_node(
     _trace(
         f"start session={state.get('session_id')} proposed_entries={len(state.get('timeline', []))}"
     )
-    await _emit_event(config, event_type="node_start", node=node_name)
+    await _emit_event(
+        config,
+        event_type="node_start",
+        node=node_name,
+        payload={"status_message": "Validating timeline clip bounds and durations."},
+    )
 
     result = _validate_timeline(state)
     notes = list(state.get("notes", []))
@@ -128,6 +133,11 @@ async def timeline_validator_node(
         payload={
             "is_valid": result.is_valid,
             "validation_errors": result.validation_errors,
+            "status_message": (
+                "Timeline validation passed; waiting for your approval."
+                if result.is_valid
+                else "Timeline validation found issues; revising timeline."
+            ),
         },
     )
     _trace(f"complete waiting_for_user={result.is_valid}")
@@ -137,4 +147,14 @@ async def timeline_validator_node(
         "notes": notes,
         "errors": errors,
         "next_action": "finish" if result.is_valid else "timeline_planner",
+        "status_message": (
+            "Timeline validation passed; waiting for your approval."
+            if result.is_valid
+            else "Timeline validation found issues; revising timeline."
+        ),
+        "status_details": {
+            "node": node_name,
+            "is_valid": result.is_valid,
+            "validation_errors": result.validation_errors,
+        },
     }

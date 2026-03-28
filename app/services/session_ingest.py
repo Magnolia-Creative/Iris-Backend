@@ -208,10 +208,6 @@ async def ingest_session_clips(
                 "file_name": video.filename,
                 "mime_type": video.content_type,
                 "extension": extension,
-                "file_size_bytes": file_size_bytes,
-                "transcript_segments": transcript_segments,
-                "transcript_full_text": full_text,
-                "video_report": video_report,
                 "clip_meta": clip_meta,
             }
             video_details.append(metadata)
