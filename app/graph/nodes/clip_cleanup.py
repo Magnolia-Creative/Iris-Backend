@@ -166,17 +166,13 @@ async def _clip_context(state: SessionGraphState) -> list[dict[str, Any]]:
     return clip_context
 
 
-def _resolve_cleanup_target_clips(state: SessionGraphState) -> list[dict[str, Any]]:
-    clip_index: dict[str, dict[str, Any]] = {}
+def _resolve_cleanup_target_clip_ids(state: SessionGraphState) -> list[str]:
+    clip_index: dict[str, str] = {}
     for clip in state.get("clips", []):
         clip_id = str(clip.get("clip_id") or "")
         if not clip_id:
             continue
-        clip_index[clip_id] = {
-            "clip_id": clip_id,
-            "summary": clip.get("summary"),
-            "metadata": clip.get("metadata", {}),
-        }
+        clip_index[clip_id] = clip_id
 
     requested_ids = (state.get("edit_plan") or {}).get("target_clips") or []
     if not requested_ids:
@@ -184,9 +180,9 @@ def _resolve_cleanup_target_clips(state: SessionGraphState) -> list[dict[str, An
 
     normalized_requested = [str(clip_id) for clip_id in requested_ids if str(clip_id) in clip_index]
     if normalized_requested:
-        return [clip_index[clip_id] for clip_id in normalized_requested]
+        return normalized_requested
 
-    return list(clip_index.values())
+    return list(clip_index.keys())
 
 
 def _group_trim_ranges_by_clip(result: ClipCleanupOutput) -> list[dict[str, Any]]:
@@ -221,14 +217,14 @@ async def clip_cleanup_node(
     _trace(
         f"start session={state.get('session_id')} prompt={state.get('user_prompt', '')!r}"
     )
-    target_clips = _resolve_cleanup_target_clips(state)
+    target_clip_ids = _resolve_cleanup_target_clip_ids(state)
     await _emit_event(
         config,
         event_type="node_start",
         node=node_name,
         payload={
             "status_message": "Cleaning up clips.",
-            "input_clips": target_clips,
+            "input_clip_ids": target_clip_ids,
         },
     )
 
@@ -308,9 +304,7 @@ async def clip_cleanup_node(
         "status_message": "Clip cleanup complete.",
         "status_details": {
             "node": node_name,
-            "selected_clip_ids": result.selected_clip_ids,
-            "dropped_clip_ids": result.dropped_clip_ids,
+            "clip_ids": target_clip_ids,
             "clip_ranges": grouped_trim_ranges,
-            "input_clips": target_clips,
         },
     }
