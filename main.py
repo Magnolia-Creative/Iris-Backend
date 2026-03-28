@@ -7,7 +7,7 @@ import logging
 from typing import Any
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,10 +104,16 @@ async def db_health(db: AsyncSession = Depends(get_db)):
 @app.post("/sessions/upload")
 async def create_session_from_upload(
     videos: list[UploadFile] = File(...),
+    local_keys: list[str] = Form(..., alias="local_key"),
     db: AsyncSession = Depends(get_db),
     session_name: str | None = None,
 ):
-    ingest_result = await ingest_session_clips(db, videos, session_name=session_name)
+    ingest_result = await ingest_session_clips(
+        db,
+        videos,
+        local_keys=local_keys,
+        session_name=session_name,
+    )
     return {
         "session_id": ingest_result["session_id"],
         "session_name": ingest_result["session_name"],
