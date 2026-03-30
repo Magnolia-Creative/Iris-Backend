@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 import time
 from typing import Any
-import uuid
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,12 +23,18 @@ logger = logging.getLogger(__name__)
 async def ingest_session_clips(
     db: AsyncSession,
     videos: list[UploadFile],
+    local_keys: list[str],
     session_name: str | None = None,
     project_name: str | None = None,
 ) -> dict[str, Any]:
     if not 1 <= len(videos) <= 10:
         raise HTTPException(
             status_code=400, detail="Upload between 1 and 10 videos per request."
+        )
+    if len(local_keys) != len(videos):
+        raise HTTPException(
+            status_code=400,
+            detail="Each uploaded video must include one local_key.",
         )
 
     request_t0 = time.perf_counter()
@@ -66,7 +71,7 @@ async def ingest_session_clips(
 
         prepared_videos: list[dict[str, Any]] = []
         t_prepare = time.perf_counter()
-        for index, video in enumerate(videos, start=1):
+        for index, (video, local_key) in enumerate(zip(videos, local_keys, strict=True), start=1):
             t_read = time.perf_counter()
             video.file.seek(0, 2)
             file_size_bytes = video.file.tell()
@@ -79,10 +84,11 @@ async def ingest_session_clips(
                 {
                     "index": index,
                     "video": video,
+                    "local_key": local_key,
                     "file_size_bytes": file_size_bytes,
                     "video_bytes": video_bytes,
                     "extension": extension,
-                    "clip_correlation_id": uuid.uuid4().hex,
+                    "clip_correlation_id": local_key,
                 }
             )
             logger.info(
@@ -208,10 +214,7 @@ async def ingest_session_clips(
                 "file_name": video.filename,
                 "mime_type": video.content_type,
                 "extension": extension,
-                "file_size_bytes": file_size_bytes,
-                "transcript_segments": transcript_segments,
-                "transcript_full_text": full_text,
-                "video_report": video_report,
+                "local_key": prepared_video["local_key"],
                 "clip_meta": clip_meta,
             }
             video_details.append(metadata)

@@ -59,6 +59,8 @@ class SessionGraphState(TypedDict, total=False):
     iteration_count: int
     notes: list[str]
     errors: list[str]
+    status_message: NotRequired[str]
+    status_details: NotRequired[dict[str, Any]]
 
 
 class RetrievalPlanModel(BaseModel):

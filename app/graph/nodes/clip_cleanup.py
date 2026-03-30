@@ -166,6 +166,104 @@ async def _clip_context(state: SessionGraphState) -> list[dict[str, Any]]:
     return clip_context
 
 
+def _resolve_cleanup_target_clip_ids(state: SessionGraphState) -> list[str]:
+    clip_index: dict[str, str] = {}
+    for clip in state.get("clips", []):
+        clip_id = str(clip.get("clip_id") or "")
+        if not clip_id:
+            continue
+        clip_index[clip_id] = clip_id
+
+    requested_ids = (state.get("edit_plan") or {}).get("target_clips") or []
+    if not requested_ids:
+        requested_ids = (state.get("retrieval_plan") or {}).get("clip_ids") or []
+
+    normalized_requested = [str(clip_id) for clip_id in requested_ids if str(clip_id) in clip_index]
+    if normalized_requested:
+        return normalized_requested
+
+    return list(clip_index.keys())
+
+
+def _group_trim_ranges_by_clip(result: ClipCleanupOutput) -> list[dict[str, Any]]:
+    grouped_ranges: dict[str, list[dict[str, Any]]] = {}
+    for suggestion in result.trim_suggestions:
+        suggestion_data = suggestion.model_dump()
+        clip_id = str(suggestion_data.get("clip_id") or "")
+        if not clip_id:
+            continue
+        grouped_ranges.setdefault(clip_id, []).append(
+            {
+                "in_sec": suggestion_data.get("in_sec"),
+                "out_sec": suggestion_data.get("out_sec"),
+                "reason": suggestion_data.get("reason"),
+            }
+        )
+
+    return [{"clip_id": clip_id, "ranges": ranges} for clip_id, ranges in grouped_ranges.items()]
+
+
+def _clip_duration_lookup(state: SessionGraphState) -> dict[str, float | None]:
+    lookup: dict[str, float | None] = {}
+    for clip in state.get("clips", []):
+        clip_id = str(clip.get("clip_id") or "")
+        if not clip_id:
+            continue
+        metadata = clip.get("metadata") if isinstance(clip.get("metadata"), dict) else {}
+        duration = metadata.get("duration_seconds")
+        lookup[clip_id] = float(duration) if isinstance(duration, (int, float)) else None
+    return lookup
+
+
+def _is_clip_changed(
+    *,
+    ranges: list[dict[str, Any]],
+    duration_sec: float | None,
+    tolerance_sec: float = 0.05,
+) -> bool:
+    if not ranges:
+        return False
+    if len(ranges) != 1:
+        return True
+    if duration_sec is None:
+        return True
+
+    clip_range = ranges[0]
+    in_sec = clip_range.get("in_sec")
+    out_sec = clip_range.get("out_sec")
+    if not isinstance(in_sec, (int, float)) or not isinstance(out_sec, (int, float)):
+        return True
+
+    starts_at_zero = abs(float(in_sec)) <= tolerance_sec
+    covers_full_duration = float(out_sec) >= (duration_sec - tolerance_sec)
+    return not (starts_at_zero and covers_full_duration)
+
+
+def _build_clip_ranges_with_change_flag(
+    state: SessionGraphState, result: ClipCleanupOutput
+) -> list[dict[str, Any]]:
+    grouped_range_list = _group_trim_ranges_by_clip(result)
+    ranges_by_clip = {entry["clip_id"]: entry["ranges"] for entry in grouped_range_list}
+    duration_lookup = _clip_duration_lookup(state)
+
+    clip_ranges: list[dict[str, Any]] = []
+    for clip_id in result.selected_clip_ids:
+        clip_key = str(clip_id)
+        ranges = ranges_by_clip.get(clip_key, [])
+        changed = _is_clip_changed(
+            ranges=ranges,
+            duration_sec=duration_lookup.get(clip_key),
+        )
+        clip_ranges.append(
+            {
+                "clip_id": clip_key,
+                "changed": changed,
+                "ranges": ranges if changed else [],
+            }
+        )
+    return clip_ranges
+
+
 async def clip_cleanup_node(
     state: SessionGraphState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
@@ -174,7 +272,16 @@ async def clip_cleanup_node(
     _trace(
         f"start session={state.get('session_id')} prompt={state.get('user_prompt', '')!r}"
     )
-    await _emit_event(config, event_type="node_start", node=node_name)
+    target_clip_ids = _resolve_cleanup_target_clip_ids(state)
+    await _emit_event(
+        config,
+        event_type="node_start",
+        node=node_name,
+        payload={
+            "status_message": "Cleaning up clips.",
+            "input_clip_ids": target_clip_ids,
+        },
+    )
 
     llm = _get_llm(config).with_structured_output(ClipCleanupOutput)
     result = await llm.ainvoke(
@@ -210,6 +317,7 @@ async def clip_cleanup_node(
         edit_plan["target_clips"] = result.selected_clip_ids
     notes = list(state.get("notes", []))
     notes.extend(result.cleanup_notes)
+    grouped_trim_ranges = _build_clip_ranges_with_change_flag(state, result)
     _trace(
         "thinking="
         + json.dumps(
@@ -236,6 +344,8 @@ async def clip_cleanup_node(
         payload={
             "selected_clip_ids": result.selected_clip_ids,
             "dropped_clip_ids": result.dropped_clip_ids,
+            "clip_ranges": grouped_trim_ranges,
+            "status_message": "Clip cleanup complete.",
         },
     )
     _trace(
@@ -246,4 +356,10 @@ async def clip_cleanup_node(
         "edit_plan": edit_plan,
         "notes": notes,
         "next_action": None,
+        "status_message": "Clip cleanup complete.",
+        "status_details": {
+            "node": node_name,
+            "clip_ids": target_clip_ids,
+            "clip_ranges": grouped_trim_ranges,
+        },
     }
