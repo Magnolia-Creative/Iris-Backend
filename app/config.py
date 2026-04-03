@@ -17,6 +17,15 @@ class Settings:
         self.transcript_cache_ttl_seconds = int(
             os.getenv("TRANSCRIPT_CACHE_TTL_SECONDS", "3600")
         )
+        self.transcription_provider = os.getenv("TRANSCRIPTION_PROVIDER", "assemblyai").lower()
+        self.assemblyai_api_key = os.getenv("ASSEMBLYAI_API_KEY")
+        self.assemblyai_base_url = os.getenv("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.com")
+        self.assemblyai_poll_interval_seconds = float(
+            os.getenv("ASSEMBLYAI_POLL_INTERVAL_SECONDS", "2.0")
+        )
+        self.assemblyai_poll_timeout_seconds = float(
+            os.getenv("ASSEMBLYAI_POLL_TIMEOUT_SECONDS", "600.0")
+        )
 
 
 settings = Settings()

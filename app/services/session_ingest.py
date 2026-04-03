@@ -151,7 +151,7 @@ async def ingest_session_clips(
             if not isinstance(transcription_result, dict):
                 raise HTTPException(
                     status_code=502,
-                    detail="Transcription returned an unexpected shape; expected object from transcribe_clip.",
+                    detail="Transcription returned an unexpected shape; expected an object payload.",
                 )
 
             raw_segments = transcription_result.get("transcript") or []
