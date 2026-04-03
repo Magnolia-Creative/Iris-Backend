@@ -1,5 +1,6 @@
 import logging
 import os
+import ssl
 import time
 from typing import Any
 import asyncio
@@ -9,6 +10,11 @@ from urllib import error, request
 import modal
 
 from app.config import settings
+
+try:
+    import certifi
+except Exception:  # pragma: no cover - optional dependency
+    certifi = None
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +79,7 @@ def _http_json_request(
         req.add_header(k, v)
 
     try:
-        with request.urlopen(req, timeout=timeout_s) as resp:
+        with request.urlopen(req, timeout=timeout_s, context=_assemblyai_ssl_context()) as resp:
             body = resp.read()
             return _decode_json_response(body)
     except error.HTTPError as exc:
@@ -91,6 +97,28 @@ def _http_json_request(
         raise RuntimeError(
             f"AssemblyAI request failed method={method} url={url} status={exc.code} detail={detail}"
         ) from exc
+    except error.URLError as exc:
+        raise RuntimeError(
+            "AssemblyAI TLS connection failed. "
+            "If you're on macOS Python.org builds, run 'Install Certificates.command'. "
+            "You can also set ASSEMBLYAI_CA_BUNDLE to a CA bundle path. "
+            f"Original error: {exc}"
+        ) from exc
+
+
+def _assemblyai_ssl_context() -> ssl.SSLContext:
+    if not settings.assemblyai_ssl_verify:
+        logger.warning(
+            "[TRANSCRIBE] ASSEMBLYAI_SSL_VERIFY=false, TLS certificate verification is disabled."
+        )
+        return ssl._create_unverified_context()  # noqa: S323
+
+    ca_bundle = (settings.assemblyai_ca_bundle or "").strip()
+    if ca_bundle:
+        return ssl.create_default_context(cafile=ca_bundle)
+    if certifi is not None:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
 
 
 def _assemblyai_ms_to_seconds(value: Any) -> float | None:
