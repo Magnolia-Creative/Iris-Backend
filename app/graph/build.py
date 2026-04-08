@@ -46,7 +46,7 @@ def build_session_graph():
         },
     )
     graph.add_edge("hydrate_transcripts", "decision_agent")
-    graph.add_edge("clip_cleanup", "decision_agent")
+    graph.add_edge("clip_cleanup", "timeline_planner")
     graph.add_edge("timeline_planner", "timeline_validator")
     graph.add_conditional_edges(
         "timeline_validator",
