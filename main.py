@@ -7,7 +7,7 @@ import logging
 from typing import Any
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +21,12 @@ from app.graph.runtime import (
     set_session_state,
 )
 from app.services.session_graph_state_store import get_persisted_session_graph_state
-from app.services.session_ingest import ingest_session_clips
+from app.services.session_ingest import (
+    cancel_clip_processing,
+    create_agent_session,
+    ingest_session_clips,
+    process_project_clips,
+)
 from app.services.session_state_builder import build_initial_state_from_session_payload
 from app.services.transcript_store import get_persisted_session_data
 from app import models  # noqa: F401
@@ -54,6 +59,11 @@ class IngestCreate(BaseModel):
     clip: ClipCreate
     transcript: dict[str, Any]
     summary: str
+
+
+class AgentSessionCreatePayload(BaseModel):
+    project_name: str | None = None
+    session_name: str | None = None
 
 
 class WebSocketSessionStartPayload(BaseModel):
@@ -118,9 +128,58 @@ async def create_session_from_upload(
         "session_id": ingest_result["session_id"],
         "session_name": ingest_result["session_name"],
         "session_status": ingest_result["session_status"],
+        "project_id": ingest_result["project_id"],
+        "project_name": ingest_result["project_name"],
         "uploaded_count": ingest_result["uploaded_count"],
+        "pending_clip_count": ingest_result["pending_clip_count"],
+        "settled_clip_count": ingest_result["settled_clip_count"],
+        "ready_for_websocket": ingest_result["ready_for_websocket"],
         "videos": ingest_result["videos"],
     }
+
+
+@app.post("/projects/agent-sessions")
+async def create_project_agent_session(
+    payload: AgentSessionCreatePayload = Body(default=AgentSessionCreatePayload()),
+    db: AsyncSession = Depends(get_db),
+):
+    return await create_agent_session(
+        db,
+        session_name=payload.session_name,
+        project_name=payload.project_name,
+    )
+
+
+@app.post("/projects/{project_id}/clips/process")
+async def process_project_clip_batch(
+    project_id: int,
+    videos: list[UploadFile] = File(...),
+    local_keys: list[str] = Form(..., alias="local_key"),
+    session_id: int = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    return await process_project_clips(
+        db,
+        project_id=project_id,
+        session_id=session_id,
+        videos=videos,
+        local_keys=local_keys,
+    )
+
+
+@app.delete("/projects/{project_id}/clips/{local_key}")
+async def cancel_project_clip(
+    project_id: int,
+    local_key: str,
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    return await cancel_clip_processing(
+        db,
+        project_id=project_id,
+        session_id=session_id,
+        local_key=local_key,
+    )
 
 
 @app.websocket("/ws/sessions/{session_id}")

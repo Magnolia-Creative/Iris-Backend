@@ -49,3 +49,8 @@ async def get_cached_transcript(cache_key: str) -> dict[str, Any] | None:
 async def is_transcript_cached(cache_key: str) -> bool:
     redis = get_redis_client()
     return bool(await redis.exists(cache_key))
+
+
+async def delete_cached_transcript(session_id: str, clip_id: str) -> None:
+    redis = get_redis_client()
+    await redis.delete(get_transcript_cache_key(session_id, clip_id))

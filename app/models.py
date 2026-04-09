@@ -47,6 +47,7 @@ class Clip(Base):
     __table_args__ = (
         Index("idx_clips_project_id", "project_id"),
         Index("idx_clips_session_id", "session_id"),
+        Index("idx_clips_session_local_key", "session_id", "local_key", unique=True),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -59,6 +60,7 @@ class Clip(Base):
 
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     codec: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -68,6 +70,12 @@ class Clip(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     language_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processing_status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
+    processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_job_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

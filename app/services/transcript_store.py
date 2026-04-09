@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app import models
+from app.services.clip_task_registry import clip_task_registry
 
 
 async def get_transcript_payload(
@@ -77,10 +78,13 @@ async def get_persisted_session_data(
                 "project_id": int(clip.project_id),
                 "clip_id": int(clip.id),
                 "transcript_id": int(transcript_record.id) if transcript_record else None,
+                "local_key": clip.local_key,
                 "file_name": clip.file_name,
                 "mime_type": clip.mime_type,
                 "extension": transcript_payload.get("extension"),
                 "file_size_bytes": clip.file_size_bytes,
+                "processing_status": clip.processing_status,
+                "processing_error": clip.processing_error,
                 "transcript_segments": transcript_segments,
                 "transcript_full_text": transcript_payload.get("full_text") or "",
                 "video_report": video_report or {},
@@ -88,11 +92,31 @@ async def get_persisted_session_data(
             }
         )
 
+    pending_clip_count = await clip_task_registry.active_count_for_session(int(session.id))
+    settled_clip_count = sum(
+        1 for video in videos if video.get("processing_status") in {"ready", "failed", "cancelled"}
+    )
+    ready_clip_count = sum(1 for video in videos if video.get("processing_status") == "ready")
+    has_failures = any(video.get("processing_status") == "failed" for video in videos)
+    ready_for_websocket = pending_clip_count == 0 and ready_clip_count > 0 and not has_failures
+    session_status = session.status
+    if pending_clip_count > 0:
+        session_status = "processing"
+    elif has_failures:
+        session_status = "attention"
+    elif ready_clip_count > 0:
+        session_status = "ready"
+    elif videos:
+        session_status = "created"
+
     return {
         "session_id": int(session.id),
         "session_name": session.name,
-        "session_status": session.status,
+        "session_status": session_status,
         "project_id": int(videos[0]["project_id"]) if videos else None,
         "uploaded_count": len(videos),
+        "pending_clip_count": pending_clip_count,
+        "settled_clip_count": settled_clip_count,
+        "ready_for_websocket": ready_for_websocket,
         "videos": videos,
     }

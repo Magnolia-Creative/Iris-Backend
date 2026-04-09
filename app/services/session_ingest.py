@@ -6,18 +6,58 @@ import time
 from typing import Any
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
-from app.services.transcription import transcribe_upload_for_ingest
+from app.services.clip_task_registry import clip_task_registry
+from app.services.transcript_cache import delete_cached_transcript
 from app.services.transcript_normalize import (
     json_safe_value,
     normalize_transcript_segments,
     segments_to_full_text,
 )
+from app.services.transcript_store import get_persisted_session_data
+from app.services.transcription import transcribe_upload_for_ingest
 
 
 logger = logging.getLogger(__name__)
+
+
+async def create_agent_session(
+    db: AsyncSession,
+    *,
+    session_name: str | None = None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
+    resolved_session_name = (
+        session_name
+        or project_name
+        or f"ingest-{datetime.utcnow().isoformat(timespec='seconds')}"
+    )
+    resolved_project_name = project_name or f"project-{resolved_session_name}"
+
+    session = models.Session(name=resolved_session_name, status="created")
+    project = models.Project(name=resolved_project_name)
+    db.add(session)
+    db.add(project)
+    await db.flush()
+    await db.commit()
+    await db.refresh(session)
+    await db.refresh(project)
+
+    return {
+        "session_id": int(session.id),
+        "session_name": session.name,
+        "session_status": session.status,
+        "project_id": int(project.id),
+        "project_name": project.name,
+        "uploaded_count": 0,
+        "pending_clip_count": 0,
+        "settled_clip_count": 0,
+        "ready_for_websocket": False,
+        "videos": [],
+    }
 
 
 async def ingest_session_clips(
@@ -26,6 +66,28 @@ async def ingest_session_clips(
     local_keys: list[str],
     session_name: str | None = None,
     project_name: str | None = None,
+) -> dict[str, Any]:
+    created = await create_agent_session(
+        db,
+        session_name=session_name,
+        project_name=project_name,
+    )
+    return await process_project_clips(
+        db,
+        project_id=created["project_id"],
+        session_id=created["session_id"],
+        videos=videos,
+        local_keys=local_keys,
+    )
+
+
+async def process_project_clips(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    session_id: int,
+    videos: list[UploadFile],
+    local_keys: list[str],
 ) -> dict[str, Any]:
     if not 1 <= len(videos) <= 10:
         raise HTTPException(
@@ -36,42 +98,35 @@ async def ingest_session_clips(
             status_code=400,
             detail="Each uploaded video must include one local_key.",
         )
+    if len(set(local_keys)) != len(local_keys):
+        raise HTTPException(status_code=400, detail="Each local_key must be unique within a batch.")
 
     request_t0 = time.perf_counter()
     logger.info("[INGEST] Received request with %d video(s)", len(videos))
-    video_details: list[dict[str, Any]] = []
-    resolved_session_name = (
-        session_name
-        or project_name
-        or f"ingest-{datetime.utcnow().isoformat(timespec='seconds')}"
-    )
+    session = await _require_session(db, session_id=session_id)
+    project = await _require_project(db, project_id=project_id)
 
     try:
-        t_session = time.perf_counter()
-        session = models.Session(name=resolved_session_name, status="ingesting")
-        db.add(session)
-        await db.flush()
-        logger.info(
-            "[INGEST] Created session id=%s name=%s duration_s=%.3f",
-            session.id,
-            session.name,
-            time.perf_counter() - t_session,
-        )
-
-        t_project = time.perf_counter()
-        project = models.Project(name=f"project-{session.id}")
-        db.add(project)
-        await db.flush()
-        logger.info(
-            "[INGEST] Created compatibility project id=%s name=%s duration_s=%.3f",
-            project.id,
-            project.name,
-            time.perf_counter() - t_project,
-        )
-
+        session.status = "processing"
         prepared_videos: list[dict[str, Any]] = []
         t_prepare = time.perf_counter()
         for index, (video, local_key) in enumerate(zip(videos, local_keys, strict=True), start=1):
+            existing_clip = await _get_clip_by_local_key(
+                db,
+                session_id=int(session.id),
+                local_key=local_key,
+            )
+            if existing_clip is not None and existing_clip.processing_status == "ready":
+                logger.info(
+                    "[INGEST] Skipping already-ready clip session_id=%s local_key=%s clip_id=%s",
+                    session.id,
+                    local_key,
+                    existing_clip.id,
+                )
+                continue
+            if existing_clip is not None:
+                await _delete_clip_artifacts(db, existing_clip)
+
             t_read = time.perf_counter()
             video.file.seek(0, 2)
             file_size_bytes = video.file.tell()
@@ -106,32 +161,75 @@ async def ingest_session_clips(
 
         logger.info("[INGEST] Launching %d concurrent transcription task(s)", len(prepared_videos))
         t_transcribe_wall = time.perf_counter()
-        transcription_tasks = [
-            transcribe_upload_for_ingest(
-                pv["video_bytes"],
-                extension=pv.get("extension") or "",
-                index=pv["index"],
-                file_name=pv["video"].filename,
-                clip_correlation_id=pv.get("clip_correlation_id"),
+        pending_rows: list[tuple[dict[str, Any], models.Clip, asyncio.Task[dict[str, Any]]]] = []
+        for prepared_video in prepared_videos:
+            clip = models.Clip(
+                project_id=int(project.id),
+                session_id=int(session.id),
+                title=Path(prepared_video["video"].filename or f"video-{prepared_video['index']}").stem,
+                file_name=prepared_video["video"].filename,
+                local_key=prepared_video["local_key"],
+                mime_type=prepared_video["video"].content_type,
+                file_size_bytes=prepared_video["file_size_bytes"],
+                processing_status="processing",
+                processing_started_at=datetime.utcnow(),
             )
-            for pv in prepared_videos
-        ]
-        transcription_results = await asyncio.gather(*transcription_tasks, return_exceptions=True)
+            db.add(clip)
+            await db.flush()
+
+            task = asyncio.create_task(
+                transcribe_upload_for_ingest(
+                    prepared_video["video_bytes"],
+                    extension=prepared_video.get("extension") or "",
+                    index=prepared_video["index"],
+                    file_name=prepared_video["video"].filename,
+                    clip_correlation_id=prepared_video.get("clip_correlation_id"),
+                )
+            )
+            await clip_task_registry.register(
+                session_id=int(session.id),
+                local_key=prepared_video["local_key"],
+                task=task,
+            )
+            pending_rows.append((prepared_video, clip, task))
+
+        transcription_results: list[dict[str, Any] | BaseException] = []
+        for prepared_video, clip, task in pending_rows:
+            local_key = prepared_video["local_key"]
+            try:
+                transcription_results.append(await task)
+            except asyncio.CancelledError as exc:
+                clip.processing_status = "cancelled"
+                clip.processing_cancelled_at = datetime.utcnow()
+                transcription_results.append(exc)
+            except Exception as exc:  # pragma: no cover - exercised through route behavior
+                transcription_results.append(exc)
+            finally:
+                await clip_task_registry.pop(
+                    session_id=int(session.id),
+                    local_key=local_key,
+                )
         logger.info(
             "[INGEST] Transcription batch wall_duration_s=%.3f (concurrent)",
             time.perf_counter() - t_transcribe_wall,
         )
 
         t_persist = time.perf_counter()
-        pending_rows: list[tuple[dict[str, Any], models.Clip, list[dict[str, Any]]]] = []
-
-        for prepared_video, transcription_result in zip(
-            prepared_videos, transcription_results, strict=True
+        for (prepared_video, clip, _), transcription_result in zip(
+            pending_rows, transcription_results, strict=True
         ):
             index = prepared_video["index"]
             video = prepared_video["video"]
-            file_size_bytes = prepared_video["file_size_bytes"]
             extension = prepared_video["extension"]
+
+            if isinstance(transcription_result, asyncio.CancelledError):
+                await db.delete(clip)
+                logger.info(
+                    "[INGEST] Cancelled clip session_id=%s local_key=%s before persistence",
+                    session.id,
+                    prepared_video["local_key"],
+                )
+                continue
 
             if isinstance(transcription_result, Exception):
                 logger.exception(
@@ -140,19 +238,16 @@ async def ingest_session_clips(
                     video.filename,
                     exc_info=transcription_result,
                 )
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        f"Transcription failed for {video.filename or f'video-{index}'}; "
-                        "check server logs for details."
-                    ),
-                ) from transcription_result
+                clip.processing_status = "failed"
+                clip.processing_error = str(transcription_result)
+                clip.processing_completed_at = datetime.utcnow()
+                continue
 
             if not isinstance(transcription_result, dict):
-                raise HTTPException(
-                    status_code=502,
-                    detail="Transcription returned an unexpected shape; expected an object payload.",
-                )
+                clip.processing_status = "failed"
+                clip.processing_error = "Transcription returned an unexpected shape."
+                clip.processing_completed_at = datetime.utcnow()
+                continue
 
             raw_segments = transcription_result.get("transcript") or []
             if not isinstance(raw_segments, list):
@@ -177,62 +272,26 @@ async def ingest_session_clips(
                 "video_report": safe_card,
                 "clip_meta": safe_meta,
             }
-            clip = models.Clip(
-                project_id=project.id,
-                session_id=session.id,
-                title=Path(video.filename or f"video-{index}").stem,
-                file_name=video.filename,
-                mime_type=video.content_type,
-                file_size_bytes=file_size_bytes,
-            )
             clip.transcript = models.Transcript(transcript=transcript_payload)
-            db.add(clip)
-            pending_rows.append((prepared_video, clip, transcript_segments))
-
-        await db.flush()
-
-        for prepared_video, clip, transcript_segments in pending_rows:
-            index = prepared_video["index"]
-            video = prepared_video["video"]
-            file_size_bytes = prepared_video["file_size_bytes"]
-            extension = prepared_video["extension"]
-            transcript = clip.transcript
-            if transcript is None:
-                raise RuntimeError("clip.transcript missing after flush")
-
-            tr = transcript.transcript if isinstance(transcript.transcript, dict) else {}
-            full_text = tr.get("full_text") or segments_to_full_text(transcript_segments)
-            video_report = tr.get("video_report")
-            clip_meta = tr.get("clip_meta") if isinstance(tr.get("clip_meta"), dict) else {}
-
-            metadata = {
-                "index": index,
-                "session_id": session.id,
-                "project_id": project.id,
-                "clip_id": clip.id,
-                "transcript_id": transcript.id,
-                "file_name": video.filename,
-                "mime_type": video.content_type,
-                "extension": extension,
-                "local_key": prepared_video["local_key"],
-                "clip_meta": clip_meta,
-            }
-            video_details.append(metadata)
+            clip.processing_status = "ready"
+            clip.processing_error = None
+            clip.provider_job_id = _extract_provider_job_id(safe_meta, safe_card)
+            clip.processing_completed_at = datetime.utcnow()
 
             logger.info(
                 "[INGEST] Saved video %d file=%s clip_id=%s transcript_id=%s segments=%d",
                 index,
                 video.filename,
                 clip.id,
-                transcript.id,
+                clip.transcript.id if clip.transcript is not None else None,
                 len(transcript_segments),
             )
 
+        await db.flush()
         logger.info(
             "[INGEST] DB persist (single batch flush) duration_s=%.3f",
             time.perf_counter() - t_persist,
         )
-        session.status = "ready"
         t_commit = time.perf_counter()
         await db.commit()
         logger.info("[INGEST] DB commit duration_s=%.3f", time.perf_counter() - t_commit)
@@ -244,19 +303,133 @@ async def ingest_session_clips(
         logger.exception("[INGEST] Unexpected ingest failure")
         raise HTTPException(status_code=500, detail="Ingest failed; check server logs for details.") from exc
 
+    result = await _build_session_payload(
+        db,
+        session_id=int(session.id),
+        fallback_project_id=int(project.id),
+        fallback_project_name=project.name,
+    )
+    await db.commit()
     logger.info(
         "[INGEST] Completed request session_id=%s project_id=%s with %d processed video(s) total_duration_s=%.3f",
         session.id,
         project.id,
-        len(video_details),
+        result["uploaded_count"],
         time.perf_counter() - request_t0,
     )
+    return result
+
+
+async def cancel_clip_processing(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    session_id: int,
+    local_key: str,
+) -> dict[str, Any]:
+    task_cancelled = await clip_task_registry.cancel(session_id=session_id, local_key=local_key)
+    clip = await _get_clip_by_local_key(db, session_id=session_id, local_key=local_key)
+    deleted_clip_id: int | None = None
+
+    if clip is not None and int(clip.project_id) == project_id:
+        deleted_clip_id = int(clip.id)
+        await _delete_clip_artifacts(db, clip)
+        await db.commit()
+    else:
+        await db.rollback()
+
+    session = await _require_session(db, session_id=session_id)
+    payload = await _build_session_payload(
+        db,
+        session_id=session_id,
+        fallback_project_id=project_id,
+        fallback_project_name=None,
+    )
+    session.status = payload["session_status"]
+    await db.commit()
+
     return {
-        "session_id": session.id,
-        "session_name": session.name,
-        "session_status": session.status,
-        "project_id": project.id,
-        "project_name": project.name,
-        "uploaded_count": len(video_details),
-        "videos": video_details,
+        "session_id": session_id,
+        "project_id": project_id,
+        "local_key": local_key,
+        "task_cancelled": task_cancelled,
+        "deleted_clip_id": deleted_clip_id,
+        "session_status": payload["session_status"],
+        "ready_for_websocket": payload["ready_for_websocket"],
     }
+
+
+async def _build_session_payload(
+    db: AsyncSession,
+    *,
+    session_id: int,
+    fallback_project_id: int | None,
+    fallback_project_name: str | None,
+) -> dict[str, Any]:
+    payload = await get_persisted_session_data(db, session_id=session_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+
+    payload["project_id"] = payload.get("project_id") or fallback_project_id
+    if fallback_project_name is not None:
+        payload["project_name"] = fallback_project_name
+    else:
+        project = await _require_project(db, project_id=int(payload["project_id"])) if payload.get("project_id") else None
+        payload["project_name"] = project.name if project is not None else None
+
+    session = await _require_session(db, session_id=session_id)
+    session.status = payload["session_status"]
+    await db.flush()
+    return payload
+
+
+async def _require_session(db: AsyncSession, *, session_id: int) -> models.Session:
+    result = await db.execute(select(models.Session).where(models.Session.id == session_id))
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+    return session
+
+
+async def _require_project(db: AsyncSession, *, project_id: int) -> models.Project:
+    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    return project
+
+
+async def _get_clip_by_local_key(
+    db: AsyncSession,
+    *,
+    session_id: int,
+    local_key: str,
+) -> models.Clip | None:
+    result = await db.execute(
+        select(models.Clip).where(
+            models.Clip.session_id == session_id,
+            models.Clip.local_key == local_key,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _delete_clip_artifacts(db: AsyncSession, clip: models.Clip) -> None:
+    if clip.session_id is not None:
+        await delete_cached_transcript(str(clip.session_id), str(clip.id))
+    await db.delete(clip)
+    await db.flush()
+
+
+def _extract_provider_job_id(
+    clip_meta: dict[str, Any],
+    video_report: dict[str, Any] | None,
+) -> str | None:
+    candidate = clip_meta.get("assemblyai_transcript_id")
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    if isinstance(video_report, dict):
+        candidate = video_report.get("transcript_id")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
