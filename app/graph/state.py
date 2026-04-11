@@ -29,6 +29,7 @@ class CleanupPlan(TypedDict, total=False):
 
 class TimelineEntry(TypedDict, total=False):
     clip_id: str
+    local_key: str | None
     in_sec: float
     out_sec: float
     rationale: str
@@ -36,6 +37,7 @@ class TimelineEntry(TypedDict, total=False):
 
 class ClipState(TypedDict, total=False):
     clip_id: str
+    local_key: str | None
     transcript_id: int
     summary: str
     metadata: dict[str, Any]
@@ -99,6 +101,7 @@ class ClipCleanupOutput(BaseModel):
 
 class TimelinePlannerEntryModel(BaseModel):
     clip_id: str
+    local_key: str | None = None
     in_sec: float
     out_sec: float
     rationale: str
@@ -111,6 +114,7 @@ class TimelinePlannerOutput(BaseModel):
 
 class ValidatedTimelineEntry(BaseModel):
     clip_id: str
+    local_key: str | None = None
     in_sec: float
     out_sec: float
     rationale: str = ""

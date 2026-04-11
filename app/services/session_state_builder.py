@@ -70,6 +70,7 @@ def build_initial_state_from_session_payload(
         clips.append(
             {
                 "clip_id": clip_id,
+                "local_key": video_payload.get("local_key"),
                 "transcript_id": transcript_id,
                 "summary": summary,
                 "metadata": {

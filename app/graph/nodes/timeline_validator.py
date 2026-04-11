@@ -42,9 +42,18 @@ def _clip_duration_lookup(state: SessionGraphState) -> dict[str, float | None]:
     return lookup
 
 
+def _clip_local_key_lookup(state: SessionGraphState) -> dict[str, str | None]:
+    lookup: dict[str, str | None] = {}
+    for clip in state.get("clips", []):
+        local_key = clip.get("local_key")
+        lookup[str(clip.get("clip_id"))] = local_key if isinstance(local_key, str) else None
+    return lookup
+
+
 def _validate_timeline(state: SessionGraphState) -> TimelineValidationResult:
     valid_clip_ids = {str(clip.get("clip_id")) for clip in state.get("clips", [])}
     duration_lookup = _clip_duration_lookup(state)
+    local_key_lookup = _clip_local_key_lookup(state)
     errors: list[str] = []
     notes: list[str] = []
     normalized: list[ValidatedTimelineEntry] = []
@@ -76,9 +85,17 @@ def _validate_timeline(state: SessionGraphState) -> TimelineValidationResult:
         if duration is None:
             notes.append(f"No duration metadata found for clip {clip_id}; bounds accepted as-is.")
 
+        entry_local_key = entry.get("local_key")
+        normalized_local_key = (
+            entry_local_key
+            if isinstance(entry_local_key, str)
+            else local_key_lookup.get(clip_id)
+        )
+
         normalized.append(
             ValidatedTimelineEntry(
                 clip_id=clip_id,
+                local_key=normalized_local_key,
                 in_sec=normalized_in,
                 out_sec=normalized_out,
                 rationale=str(entry.get("rationale") or ""),
