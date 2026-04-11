@@ -199,6 +199,7 @@ async def session_websocket(
         persisted_session_data = await get_persisted_session_data(
             db=db,
             session_id=session_id,
+            include_ingest_details=True,
         )
         if persisted_session_data is None:
             await send_event(

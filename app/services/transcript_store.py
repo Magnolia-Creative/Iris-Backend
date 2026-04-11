@@ -42,7 +42,10 @@ async def get_transcripts_for_clips(
 
 
 async def get_persisted_session_data(
-    db: AsyncSession, session_id: int
+    db: AsyncSession,
+    session_id: int,
+    *,
+    include_ingest_details: bool = False,
 ) -> dict[str, Any] | None:
     result = await db.execute(
         select(models.Session)
@@ -61,36 +64,42 @@ async def get_persisted_session_data(
             if transcript_record and isinstance(transcript_record.transcript, dict)
             else {}
         )
-        transcript_segments = transcript_payload.get("segments")
-        if not isinstance(transcript_segments, list):
-            transcript_segments = []
-        clip_meta = transcript_payload.get("clip_meta")
-        if not isinstance(clip_meta, dict):
-            clip_meta = {}
-        video_report = transcript_payload.get("video_report")
-        if video_report is not None and not isinstance(video_report, dict):
-            video_report = {}
+        video_payload = {
+            "index": index,
+            "session_id": int(session.id),
+            "project_id": int(clip.project_id),
+            "clip_id": int(clip.id),
+            "transcript_id": int(transcript_record.id) if transcript_record else None,
+            "local_key": clip.local_key,
+            "file_name": clip.file_name,
+            "mime_type": clip.mime_type,
+            "extension": transcript_payload.get("extension"),
+            "processing_status": clip.processing_status,
+            "processing_error": clip.processing_error,
+        }
 
-        videos.append(
-            {
-                "index": index,
-                "session_id": int(session.id),
-                "project_id": int(clip.project_id),
-                "clip_id": int(clip.id),
-                "transcript_id": int(transcript_record.id) if transcript_record else None,
-                "local_key": clip.local_key,
-                "file_name": clip.file_name,
-                "mime_type": clip.mime_type,
-                "extension": transcript_payload.get("extension"),
-                "file_size_bytes": clip.file_size_bytes,
-                "processing_status": clip.processing_status,
-                "processing_error": clip.processing_error,
-                "transcript_segments": transcript_segments,
-                "transcript_full_text": transcript_payload.get("full_text") or "",
-                "video_report": video_report or {},
-                "clip_meta": clip_meta,
-            }
-        )
+        if include_ingest_details:
+            transcript_segments = transcript_payload.get("segments")
+            if not isinstance(transcript_segments, list):
+                transcript_segments = []
+            clip_meta = transcript_payload.get("clip_meta")
+            if not isinstance(clip_meta, dict):
+                clip_meta = {}
+            video_report = transcript_payload.get("video_report")
+            if video_report is not None and not isinstance(video_report, dict):
+                video_report = {}
+
+            video_payload.update(
+                {
+                    "file_size_bytes": clip.file_size_bytes,
+                    "transcript_segments": transcript_segments,
+                    "transcript_full_text": transcript_payload.get("full_text") or "",
+                    "video_report": video_report or {},
+                    "clip_meta": clip_meta,
+                }
+            )
+
+        videos.append(video_payload)
 
     pending_clip_count = await clip_task_registry.active_count_for_session(int(session.id))
     settled_clip_count = sum(

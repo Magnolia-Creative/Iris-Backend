@@ -66,13 +66,8 @@ def test_process_project_clip_batch_route(monkeypatch):
                     "file_name": "clip.m4a",
                     "mime_type": "audio/mp4",
                     "extension": ".m4a",
-                    "file_size_bytes": 24,
                     "processing_status": "ready",
                     "processing_error": None,
-                    "transcript_segments": [],
-                    "transcript_full_text": "",
-                    "video_report": {},
-                    "clip_meta": {},
                 }
             ],
         }
@@ -91,6 +86,11 @@ def test_process_project_clip_batch_route(monkeypatch):
     assert response.status_code == 200
     assert response.json()["ready_for_websocket"] is True
     assert response.json()["videos"][0]["local_key"] == "abc-123"
+    assert "file_size_bytes" not in response.json()["videos"][0]
+    assert "transcript_segments" not in response.json()["videos"][0]
+    assert "transcript_full_text" not in response.json()["videos"][0]
+    assert "video_report" not in response.json()["videos"][0]
+    assert "clip_meta" not in response.json()["videos"][0]
 
 
 def test_cancel_project_clip_route(monkeypatch):
