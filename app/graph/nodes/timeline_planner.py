@@ -139,6 +139,8 @@ async def timeline_planner_node(
         node=node_name,
         payload={
             "timeline_entries": len(result.timeline),
+            "timeline": [entry.model_dump() for entry in result.timeline],
+            "timeline_notes": result.timeline_notes,
             "status_message": "Timeline updated.",
         },
     )

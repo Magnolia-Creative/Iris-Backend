@@ -7,7 +7,8 @@ import logging
 from typing import Any
 from typing import Literal
 
-from fastapi import Body, Depends, FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,11 @@ from app.graph.runtime import (
     set_session_state,
 )
 from app.services.session_graph_state_store import get_persisted_session_graph_state
+from app.services.session_debug_store import (
+    build_session_debug_snapshot,
+    initialize_session_debug,
+    record_session_event,
+)
 from app.services.session_ingest import (
     cancel_clip_processing,
     create_agent_session,
@@ -98,6 +104,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -167,6 +181,29 @@ async def process_project_clip_batch(
     )
 
 
+@app.get("/sessions/{session_id}/debug")
+async def get_session_debug(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    session_payload = await get_persisted_session_data(
+        db=db,
+        session_id=session_id,
+        include_ingest_details=True,
+    )
+    if session_payload is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+
+    persisted_graph_state = await get_persisted_session_graph_state(db=db, session_id=session_id)
+    state = get_session_state(str(session_id)) or persisted_graph_state
+    initialize_session_debug(str(session_id), state)
+    return build_session_debug_snapshot(
+        session_id=session_id,
+        session_payload=session_payload,
+        state=state,
+    )
+
+
 @app.delete("/projects/{project_id}/clips/{local_key}")
 async def cancel_project_clip(
     project_id: int,
@@ -191,7 +228,8 @@ async def session_websocket(
     await websocket.accept()
 
     async def send_event(payload: dict[str, Any]) -> None:
-        await websocket.send_text(json.dumps(payload))
+        tracked_payload = record_session_event(str(session_id), payload)
+        await websocket.send_text(json.dumps(tracked_payload))
 
     try:
         raw_message = await websocket.receive_json()
@@ -217,6 +255,11 @@ async def session_websocket(
             session_payload=persisted_session_data,
             user_prompt=start_payload.user_prompt,
         )
+        persisted_graph_state = await get_persisted_session_graph_state(db=db, session_id=session_id)
+        initialize_session_debug(
+            str(session_id),
+            persisted_graph_state or initial_state,
+        )
 
         await send_event(
             {
@@ -226,7 +269,6 @@ async def session_websocket(
                 "uploaded_count": persisted_session_data["uploaded_count"],
             }
         )
-        persisted_graph_state = await get_persisted_session_graph_state(db=db, session_id=session_id)
         if persisted_graph_state is not None:
             set_session_state(str(session_id), persisted_graph_state)
             if persisted_graph_state.get("waiting_for_user"):

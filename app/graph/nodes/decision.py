@@ -156,6 +156,9 @@ async def decision_agent_node(
         node=node_name,
         payload={
             "next_action": next_action,
+            "retrieval_plan": result.retrieval_plan.model_dump(),
+            "edit_plan": result.edit_plan.model_dump(),
+            "reasoning_notes": result.reasoning_notes,
             "status_message": "Planning update ready.",
         },
     )

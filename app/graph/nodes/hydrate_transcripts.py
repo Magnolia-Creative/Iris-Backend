@@ -108,6 +108,7 @@ async def hydrate_transcripts_node(
         event_type="node_complete",
         node=node_name,
         payload={
+            "requested_clip_ids": sorted(requested_clip_ids),
             "hydrated_clip_ids": hydrated_clip_ids,
             "status_message": "Audio analysis complete.",
         },

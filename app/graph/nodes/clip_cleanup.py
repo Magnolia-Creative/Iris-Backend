@@ -342,9 +342,11 @@ async def clip_cleanup_node(
         event_type="node_complete",
         node=node_name,
         payload={
+            "target_clip_ids": target_clip_ids,
             "selected_clip_ids": result.selected_clip_ids,
             "dropped_clip_ids": result.dropped_clip_ids,
             "clip_ranges": grouped_trim_ranges,
+            "cleanup_notes": result.cleanup_notes,
             "status_message": "Clip cleanup complete.",
         },
     )

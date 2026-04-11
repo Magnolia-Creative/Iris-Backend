@@ -149,6 +149,8 @@ async def timeline_validator_node(
         node=node_name,
         payload={
             "is_valid": result.is_valid,
+            "normalized_timeline": [entry.model_dump() for entry in result.normalized_timeline],
+            "validation_notes": result.validation_notes,
             "validation_errors": result.validation_errors,
             "status_message": (
                 "Timeline ready for review."

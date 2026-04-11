@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from app.config import settings
 from app.graph.build import build_session_graph
 from app.graph.state import SessionGraphState
+from app.services.session_debug_store import initialize_session_debug, update_session_debug_state
 from app.services.session_graph_state_store import persist_session_graph_state
 
 
@@ -55,6 +56,7 @@ async def run_session_until_pause(
 ) -> SessionGraphState:
     graph = build_session_graph()
     session_id = state["session_id"]
+    initialize_session_debug(session_id, state)
     logger.info("[runtime] Starting graph run session=%s", session_id)
     _trace(
         f"run_start session={session_id} iteration={state.get('iteration_count', 0)} "
@@ -72,6 +74,7 @@ async def run_session_until_pause(
     }
     async for graph_state in graph.astream(state, config=config, stream_mode="values"):
         latest_state = graph_state
+        update_session_debug_state(session_id, latest_state)
         status_message = str(latest_state.get("status_message") or "").strip()
         status_details = latest_state.get("status_details")
         if status_message:
@@ -92,6 +95,13 @@ async def run_session_until_pause(
                     }
                 )
                 last_status_fingerprint = fingerprint
+        await event_handler(
+            {
+                "type": "state_snapshot",
+                "session_id": session_id,
+                "state": latest_state,
+            }
+        )
         _trace(
             "graph_state_update "
             f"next_action={latest_state.get('next_action')} "
@@ -100,6 +110,7 @@ async def run_session_until_pause(
         )
 
     _session_store[session_id] = latest_state
+    update_session_debug_state(session_id, latest_state)
     await persist_session_graph_state(db=db, session_id=int(session_id), state=latest_state)
 
     if latest_state.get("waiting_for_user"):
@@ -204,9 +215,17 @@ async def approve_session_timeline(
         "notes": list(state.get("notes", [])) + ["User approved proposed timeline."],
     }
     _session_store[session_id] = approved_state
+    update_session_debug_state(session_id, approved_state)
     await persist_session_graph_state(db=db, session_id=int(session_id), state=approved_state)
     logger.info("[runtime] Timeline approved session=%s", session_id)
     _trace(f"approved session={session_id}")
+    await event_handler(
+        {
+            "type": "state_snapshot",
+            "session_id": session_id,
+            "state": approved_state,
+        }
+    )
     await event_handler(
         {
             "type": "session_complete",
