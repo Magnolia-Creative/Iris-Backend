@@ -159,7 +159,7 @@ async def decision_agent_node(
             "retrieval_plan": result.retrieval_plan.model_dump(),
             "edit_plan": result.edit_plan.model_dump(),
             "reasoning_notes": result.reasoning_notes,
-            "status_message": "Planning update ready.",
+            "status_message": "Planning next move.",
         },
     )
     _trace(f"complete next_action={next_action}")
@@ -169,7 +169,7 @@ async def decision_agent_node(
         "edit_plan": result.edit_plan.model_dump(),
         "force_reconsider": False,
         "notes": notes,
-        "status_message": "Planning update ready.",
+        "status_message": "Planning next move.",
         "status_details": {
             "node": node_name,
             "next_action": next_action,

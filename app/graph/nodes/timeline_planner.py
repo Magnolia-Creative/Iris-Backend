@@ -87,7 +87,7 @@ async def timeline_planner_node(
         config,
         event_type="node_start",
         node=node_name,
-        payload={"status_message": "Updating timeline."},
+        payload={"status_message": "Applying finishing touches."},
     )
 
     llm = _get_llm(config).with_structured_output(TimelinePlannerOutput)
