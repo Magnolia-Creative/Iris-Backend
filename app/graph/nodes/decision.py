@@ -68,6 +68,70 @@ def _clip_digest(state: SessionGraphState) -> list[dict[str, Any]]:
     return digest
 
 
+def _preview_focus_terms(*candidate_groups: list[Any]) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for group in candidate_groups:
+        for value in group:
+            normalized = " ".join(str(value).replace("_", " ").split()).strip(" .,:;")
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            terms.append(normalized[:40].rstrip(" ,;:"))
+    return terms
+
+
+def _user_facing_reasoning_notes(
+    state: SessionGraphState,
+    *,
+    next_action: str,
+    retrieval_plan: dict[str, Any],
+    edit_plan: dict[str, Any],
+    force_reconsider: bool,
+) -> list[str]:
+    notes: list[str] = []
+
+    if force_reconsider:
+        notes.append("Reviewing your latest feedback to decide what should change and what should stay.")
+
+    focus_terms = _preview_focus_terms(
+        retrieval_plan.get("query_focus") or [],
+        edit_plan.get("constraints") or [],
+    )
+    if focus_terms:
+        preview = ", ".join(focus_terms[:2])
+        notes.append(f"Keeping the edit focused on {preview}.")
+    elif state.get("timeline"):
+        notes.append("Checking the current cut before making the next change.")
+    else:
+        notes.append("Reviewing your request and deciding on the best next step.")
+
+    if next_action == "hydrate_transcripts":
+        notes.append("I need a closer read of what is being said before changing the edit.")
+    elif next_action == "clip_cleanup":
+        notes.append("Identifying the strongest moments to keep and the parts that can be trimmed back.")
+    elif next_action == "timeline_planner":
+        notes.append("I have enough context to shape the next version of the cut.")
+    elif next_action == "finish":
+        notes.append("The current cut looks aligned with your request, so I'm ready to wrap it up.")
+
+    deduped: list[str] = []
+    seen_notes: set[str] = set()
+    for note in notes:
+        cleaned = " ".join(note.split())
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen_notes:
+            continue
+        seen_notes.add(key)
+        deduped.append(cleaned)
+    return deduped[:3]
+
+
 async def decision_agent_node(
     state: SessionGraphState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
@@ -120,6 +184,9 @@ async def decision_agent_node(
             "semantic filtering or trim suggestions are needed. Choose timeline_planner "
             "when there is enough context to assemble the timeline. Choose finish only "
             "if the workflow should stop without further changes.\n"
+            "When filling reasoning_notes, write 1-3 short user-facing notes in plain language "
+            "about what you are considering next. Do not mention internal node names, field names, "
+            "JSON, iteration counts, reconsider flags, retrieval plans, or other implementation details.\n"
             "If Force reconsider is true, you must not choose finish on this turn; "
             "select the best non-finish action to reevaluate the user's latest request.",
         ),
@@ -133,6 +200,13 @@ async def decision_agent_node(
         )
     notes = list(state.get("notes", []))
     notes.extend(result.reasoning_notes)
+    user_reasoning_notes = _user_facing_reasoning_notes(
+        state,
+        next_action=next_action,
+        retrieval_plan=result.retrieval_plan.model_dump(),
+        edit_plan=result.edit_plan.model_dump(),
+        force_reconsider=force_reconsider,
+    )
     _trace(
         "thinking="
         + json.dumps(
@@ -158,7 +232,7 @@ async def decision_agent_node(
             "next_action": next_action,
             "retrieval_plan": result.retrieval_plan.model_dump(),
             "edit_plan": result.edit_plan.model_dump(),
-            "reasoning_notes": result.reasoning_notes,
+            "reasoning_notes": user_reasoning_notes,
             "status_message": "Planning next move.",
         },
     )
@@ -173,6 +247,6 @@ async def decision_agent_node(
         "status_details": {
             "node": node_name,
             "next_action": next_action,
-            "reasoning_notes": result.reasoning_notes,
+            "reasoning_notes": user_reasoning_notes,
         },
     }
