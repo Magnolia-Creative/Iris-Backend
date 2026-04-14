@@ -29,7 +29,7 @@ def test_create_sentence_transcription_route(monkeypatch):
             "confidence": 0.99,
             "audio_duration": 1.2,
             "status": "completed",
-            "meta": {"provider": "assemblyai"},
+            "meta": {"provider": "modal"},
         }
 
     monkeypatch.setattr(main, "transcribe_upload_to_sentences", fake_transcribe_upload_to_sentences)
@@ -45,7 +45,7 @@ def test_create_sentence_transcription_route(monkeypatch):
     assert payload["transcript_id"] == "tr-123"
     assert payload["full_text"] == "Hello world."
     assert payload["sentences"][0]["text"] == "Hello world."
-    assert payload["meta"]["provider"] == "assemblyai"
+    assert payload["meta"]["provider"] == "modal"
 
 
 def test_create_project_agent_session_route(monkeypatch):

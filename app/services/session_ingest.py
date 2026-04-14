@@ -428,6 +428,9 @@ def _extract_provider_job_id(
     candidate = clip_meta.get("assemblyai_transcript_id")
     if isinstance(candidate, str) and candidate:
         return candidate
+    candidate = clip_meta.get("clip_id")
+    if isinstance(candidate, str) and candidate:
+        return candidate
     if isinstance(video_report, dict):
         candidate = video_report.get("transcript_id")
         if isinstance(candidate, str) and candidate:

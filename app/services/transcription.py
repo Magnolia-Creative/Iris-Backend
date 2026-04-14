@@ -23,6 +23,19 @@ MODAL_APP_NAME = os.getenv("MODAL_WHISPERX_APP_NAME", "whisperx-stitcher")
 MODAL_TRANSCRIBE_CLIP_NAME = os.getenv("MODAL_TRANSCRIBE_CLIP_FUNCTION", "transcribe_clip")
 
 
+def _full_text_from_segments(segments: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        text = segment.get("text")
+        if isinstance(text, str):
+            normalized = text.strip()
+            if normalized:
+                parts.append(normalized)
+    return " ".join(parts)
+
+
 async def transcribe_clip_modal(
     audio_bytes: bytes,
     suffix: str = ".m4a",
@@ -128,14 +141,7 @@ def _assemblyai_ms_to_seconds(value: Any) -> float | None:
 
 
 def _assemblyai_full_text_from_segments(segments: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for segment in segments:
-        text = segment.get("text")
-        if isinstance(text, str):
-            normalized = text.strip()
-            if normalized:
-                parts.append(normalized)
-    return " ".join(parts)
+    return _full_text_from_segments(segments)
 
 
 def _segments_from_assemblyai(transcript: dict[str, Any]) -> list[dict[str, Any]]:
@@ -408,6 +414,38 @@ async def transcribe_upload_to_sentences(
     audio_bytes: bytes,
     suffix: str = ".m4a",
 ) -> dict[str, Any]:
+    provider = (settings.transcription_provider or "modal").lower()
+    if provider == "modal":
+        result = await transcribe_clip_modal(audio_bytes, suffix=suffix)
+        sentences_raw = result.get("transcript")
+        sentences = [segment for segment in sentences_raw if isinstance(segment, dict)] if isinstance(sentences_raw, list) else []
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        clip_id = meta.get("clip_id")
+        return {
+            "transcript_id": clip_id if isinstance(clip_id, str) and clip_id else None,
+            "full_text": _full_text_from_segments(sentences),
+            "sentences": sentences,
+            "language_code": None,
+            "confidence": None,
+            "audio_duration": (
+                float(meta["duration_s"]) if isinstance(meta.get("duration_s"), (int, float)) else None
+            ),
+            "status": "completed",
+            "meta": {
+                "provider": "modal",
+                "suffix": suffix,
+                "audio_bytes": len(audio_bytes),
+                "clip_id": clip_id,
+                "modal_app_name": MODAL_APP_NAME,
+                "modal_function_name": MODAL_TRANSCRIBE_CLIP_NAME,
+                "wall_s": meta.get("wall_s"),
+            },
+        }
+    if provider != "assemblyai":
+        raise RuntimeError(
+            f"Unsupported TRANSCRIPTION_PROVIDER={provider!r}. Use 'assemblyai' or 'modal'."
+        )
+
     t0 = time.perf_counter()
     upload_url = await _assemblyai_upload_audio(audio_bytes)
     submitted = await _assemblyai_submit_transcript(upload_url)
@@ -476,7 +514,7 @@ async def transcribe_upload_async(
     suffix: str = ".m4a",
     clip_id: str | None = None,
 ) -> dict[str, Any]:
-    provider = (settings.transcription_provider or "assemblyai").lower()
+    provider = (settings.transcription_provider or "modal").lower()
     if provider == "modal":
         return await transcribe_clip_modal(audio_bytes, suffix=suffix, clip_id=clip_id)
     if provider == "assemblyai":
