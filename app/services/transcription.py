@@ -127,6 +127,17 @@ def _assemblyai_ms_to_seconds(value: Any) -> float | None:
     return None
 
 
+def _assemblyai_full_text_from_segments(segments: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for segment in segments:
+        text = segment.get("text")
+        if isinstance(text, str):
+            normalized = text.strip()
+            if normalized:
+                parts.append(normalized)
+    return " ".join(parts)
+
+
 def _segments_from_assemblyai(transcript: dict[str, Any]) -> list[dict[str, Any]]:
     utterances = transcript.get("utterances")
     segments: list[dict[str, Any]] = []
@@ -236,6 +247,19 @@ async def _assemblyai_upload_audio(audio_bytes: bytes) -> str:
     if not isinstance(upload_url, str) or not upload_url:
         raise RuntimeError("AssemblyAI upload succeeded but response did not contain upload_url")
     return upload_url
+
+
+async def _assemblyai_fetch_sentences(transcript_id: str) -> dict[str, Any]:
+    base_url = settings.assemblyai_base_url.rstrip("/")
+    url = f"{base_url}/v2/transcript/{transcript_id}/sentences"
+    return await asyncio.to_thread(
+        _http_json_request,
+        method="GET",
+        url=url,
+        headers=_assemblyai_headers(),
+        payload=None,
+        timeout_s=60.0,
+    )
 
 
 async def _assemblyai_submit_transcript(upload_url: str) -> dict[str, Any]:
@@ -349,6 +373,100 @@ async def transcribe_clip_assemblyai(
             "assemblyai_upload_url": upload_url,
             "assemblyai_transcript_id": transcript_id,
             "duration_seconds": float(audio_duration) if isinstance(audio_duration, (int, float)) else None,
+        },
+    }
+
+
+def _sentence_segments_from_assemblyai(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_sentences = payload.get("sentences")
+    if not isinstance(raw_sentences, list):
+        return []
+
+    segments: list[dict[str, Any]] = []
+    for item in raw_sentences:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        segment: dict[str, Any] = {
+            "text": text,
+            "start": _assemblyai_ms_to_seconds(item.get("start")) or 0.0,
+            "end": _assemblyai_ms_to_seconds(item.get("end")) or 0.0,
+        }
+        if isinstance(item.get("confidence"), (int, float)):
+            segment["confidence"] = float(item["confidence"])
+        if item.get("speaker") is not None:
+            segment["speaker"] = item.get("speaker")
+        if item.get("channel") is not None:
+            segment["channel"] = item.get("channel")
+        segments.append(segment)
+    return segments
+
+
+async def transcribe_upload_to_sentences(
+    audio_bytes: bytes,
+    suffix: str = ".m4a",
+) -> dict[str, Any]:
+    t0 = time.perf_counter()
+    upload_url = await _assemblyai_upload_audio(audio_bytes)
+    submitted = await _assemblyai_submit_transcript(upload_url)
+    transcript_id = submitted.get("id")
+    if not isinstance(transcript_id, str) or not transcript_id:
+        raise RuntimeError("AssemblyAI submit response missing transcript id")
+
+    completed = await _assemblyai_poll_transcript(transcript_id)
+    sentences_payload = await _assemblyai_fetch_sentences(transcript_id)
+    elapsed = time.perf_counter() - t0
+
+    sentences = _sentence_segments_from_assemblyai(sentences_payload)
+    full_text = _assemblyai_full_text_from_segments(sentences)
+    if not full_text:
+        full_text = str(completed.get("text") or "").strip()
+
+    logger.info(
+        "[TRANSCRIBE] assemblyai sentence export duration_s=%.3f audio_bytes=%d transcript_id=%s status=%s sentences=%d",
+        elapsed,
+        len(audio_bytes),
+        transcript_id,
+        completed.get("status"),
+        len(sentences),
+    )
+
+    return {
+        "transcript_id": transcript_id,
+        "full_text": full_text,
+        "sentences": sentences,
+        "language_code": (
+            completed.get("language_code")
+            if isinstance(completed.get("language_code"), str)
+            else None
+        ),
+        "confidence": (
+            float(sentences_payload["confidence"])
+            if isinstance(sentences_payload.get("confidence"), (int, float))
+            else (
+                float(completed["confidence"])
+                if isinstance(completed.get("confidence"), (int, float))
+                else None
+            )
+        ),
+        "audio_duration": (
+            float(sentences_payload["audio_duration"])
+            if isinstance(sentences_payload.get("audio_duration"), (int, float))
+            else (
+                float(completed["audio_duration"])
+                if isinstance(completed.get("audio_duration"), (int, float))
+                else None
+            )
+        ),
+        "status": completed.get("status"),
+        "meta": {
+            "provider": "assemblyai",
+            "suffix": suffix,
+            "audio_bytes": len(audio_bytes),
+            "wall_s": elapsed,
+            "assemblyai_upload_url": upload_url,
         },
     }
 

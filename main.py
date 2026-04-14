@@ -34,6 +34,7 @@ from app.services.session_ingest import (
     process_project_clips,
 )
 from app.services.session_state_builder import build_initial_state_from_session_payload
+from app.services.transcription import transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
 from app import models  # noqa: F401
 
@@ -123,6 +124,19 @@ def health():
 async def db_health(db: AsyncSession = Depends(get_db)):
     result = await db.execute(text("SELECT 1"))
     return {"database": "ok", "result": result.scalar_one()}
+
+
+@app.post("/transcriptions/sentences")
+async def create_sentence_transcription(audio: UploadFile = File(...)):
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio upload was empty.")
+
+    suffix = ""
+    if audio.filename and "." in audio.filename:
+        suffix = f".{audio.filename.rsplit('.', 1)[-1]}"
+
+    return await transcribe_upload_to_sentences(audio_bytes, suffix=suffix or ".m4a")
 
 
 @app.post("/sessions/upload")

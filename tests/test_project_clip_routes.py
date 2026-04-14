@@ -10,6 +10,44 @@ async def _fake_db() -> AsyncIterator[object]:
     yield object()
 
 
+def test_create_sentence_transcription_route(monkeypatch):
+    async def fake_transcribe_upload_to_sentences(audio_bytes, suffix=".m4a"):
+        assert audio_bytes == b"audio"
+        assert suffix == ".m4a"
+        return {
+            "transcript_id": "tr-123",
+            "full_text": "Hello world.",
+            "sentences": [
+                {
+                    "text": "Hello world.",
+                    "start": 0.0,
+                    "end": 1.2,
+                    "confidence": 0.99,
+                }
+            ],
+            "language_code": "en",
+            "confidence": 0.99,
+            "audio_duration": 1.2,
+            "status": "completed",
+            "meta": {"provider": "assemblyai"},
+        }
+
+    monkeypatch.setattr(main, "transcribe_upload_to_sentences", fake_transcribe_upload_to_sentences)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/transcriptions/sentences",
+            files={"audio": ("clip.m4a", b"audio", "audio/mp4")},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["transcript_id"] == "tr-123"
+    assert payload["full_text"] == "Hello world."
+    assert payload["sentences"][0]["text"] == "Hello world."
+    assert payload["meta"]["provider"] == "assemblyai"
+
+
 def test_create_project_agent_session_route(monkeypatch):
     async def fake_create_agent_session(db, *, session_name=None, project_name=None):
         assert session_name == "Launch Day"
