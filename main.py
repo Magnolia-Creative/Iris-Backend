@@ -34,7 +34,7 @@ from app.services.session_ingest import (
     process_project_clips,
 )
 from app.services.session_state_builder import build_initial_state_from_session_payload
-from app.services.transcription import transcribe_upload_to_sentences
+from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
 from app import models  # noqa: F401
 
@@ -136,7 +136,14 @@ async def create_sentence_transcription(audio: UploadFile = File(...)):
     if audio.filename and "." in audio.filename:
         suffix = f".{audio.filename.rsplit('.', 1)[-1]}"
 
-    return await transcribe_upload_to_sentences(audio_bytes, suffix=suffix or ".m4a")
+    result = await transcribe_upload_to_sentences(audio_bytes, suffix=suffix or ".m4a")
+    print_received_transcript(
+        source="main_endpoint",
+        transcript_id=result.get("transcript_id"),
+        full_text=result.get("full_text"),
+        segments=result.get("sentences"),
+    )
+    return result
 
 
 @app.post("/sessions/upload")
@@ -193,6 +200,21 @@ async def process_project_clip_batch(
         videos=videos,
         local_keys=local_keys,
     )
+
+
+@app.get("/sessions/{session_id}")
+async def get_session_status(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    session_payload = await get_persisted_session_data(
+        db=db,
+        session_id=session_id,
+        include_ingest_details=False,
+    )
+    if session_payload is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+    return session_payload
 
 
 @app.get("/sessions/{session_id}/debug")
@@ -259,6 +281,17 @@ async def session_websocket(
                     "type": "error",
                     "session_id": session_id,
                     "detail": f"Session {session_id} not found.",
+                }
+            )
+            await websocket.close(code=1008)
+            return
+
+        if not persisted_session_data.get("ready_for_websocket"):
+            await send_event(
+                {
+                    "type": "error",
+                    "session_id": session_id,
+                    "detail": "Session clips are still processing. Wait for remote transcripts to finish before starting.",
                 }
             )
             await websocket.close(code=1008)

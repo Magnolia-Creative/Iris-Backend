@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
+from app.database import SessionLocal
 from app.services.clip_task_registry import clip_task_registry
 from app.services.transcript_cache import delete_cached_transcript
 from app.services.transcript_normalize import (
@@ -18,7 +19,7 @@ from app.services.transcript_normalize import (
     segments_to_full_text,
 )
 from app.services.transcript_store import get_persisted_session_data
-from app.services.transcription import transcribe_upload_for_ingest
+from app.services.transcription import print_received_transcript, transcribe_upload_for_ingest
 
 
 logger = logging.getLogger(__name__)
@@ -159,9 +160,8 @@ async def process_project_clips(
             time.perf_counter() - t_prepare,
         )
 
-        logger.info("[INGEST] Launching %d concurrent transcription task(s)", len(prepared_videos))
-        t_transcribe_wall = time.perf_counter()
-        pending_rows: list[tuple[dict[str, Any], models.Clip, asyncio.Task[dict[str, Any]]]] = []
+        logger.info("[INGEST] Scheduling %d background transcription task(s)", len(prepared_videos))
+        pending_rows: list[tuple[dict[str, Any], models.Clip]] = []
         for prepared_video in prepared_videos:
             clip = models.Clip(
                 project_id=int(project.id),
@@ -176,13 +176,22 @@ async def process_project_clips(
             )
             db.add(clip)
             await db.flush()
+            pending_rows.append((prepared_video, clip))
 
+        await db.flush()
+        await db.commit()
+
+        for prepared_video, clip in pending_rows:
             task = asyncio.create_task(
-                transcribe_upload_for_ingest(
-                    prepared_video["video_bytes"],
+                _run_clip_transcription(
+                    session_id=int(session.id),
+                    local_key=prepared_video["local_key"],
+                    clip_id=int(clip.id),
+                    video_bytes=prepared_video["video_bytes"],
                     extension=prepared_video.get("extension") or "",
                     index=prepared_video["index"],
                     file_name=prepared_video["video"].filename,
+                    mime_type=prepared_video["video"].content_type,
                     clip_correlation_id=prepared_video.get("clip_correlation_id"),
                 )
             )
@@ -191,110 +200,6 @@ async def process_project_clips(
                 local_key=prepared_video["local_key"],
                 task=task,
             )
-            pending_rows.append((prepared_video, clip, task))
-
-        transcription_results: list[dict[str, Any] | BaseException] = []
-        for prepared_video, clip, task in pending_rows:
-            local_key = prepared_video["local_key"]
-            try:
-                transcription_results.append(await task)
-            except asyncio.CancelledError as exc:
-                clip.processing_status = "cancelled"
-                clip.processing_cancelled_at = datetime.utcnow()
-                transcription_results.append(exc)
-            except Exception as exc:  # pragma: no cover - exercised through route behavior
-                transcription_results.append(exc)
-            finally:
-                await clip_task_registry.pop(
-                    session_id=int(session.id),
-                    local_key=local_key,
-                )
-        logger.info(
-            "[INGEST] Transcription batch wall_duration_s=%.3f (concurrent)",
-            time.perf_counter() - t_transcribe_wall,
-        )
-
-        t_persist = time.perf_counter()
-        for (prepared_video, clip, _), transcription_result in zip(
-            pending_rows, transcription_results, strict=True
-        ):
-            index = prepared_video["index"]
-            video = prepared_video["video"]
-            extension = prepared_video["extension"]
-
-            if isinstance(transcription_result, asyncio.CancelledError):
-                await db.delete(clip)
-                logger.info(
-                    "[INGEST] Cancelled clip session_id=%s local_key=%s before persistence",
-                    session.id,
-                    prepared_video["local_key"],
-                )
-                continue
-
-            if isinstance(transcription_result, Exception):
-                logger.exception(
-                    "[INGEST] Transcription failed for video %d file=%s",
-                    index,
-                    video.filename,
-                    exc_info=transcription_result,
-                )
-                clip.processing_status = "failed"
-                clip.processing_error = str(transcription_result)
-                clip.processing_completed_at = datetime.utcnow()
-                continue
-
-            if not isinstance(transcription_result, dict):
-                clip.processing_status = "failed"
-                clip.processing_error = "Transcription returned an unexpected shape."
-                clip.processing_completed_at = datetime.utcnow()
-                continue
-
-            raw_segments = transcription_result.get("transcript") or []
-            if not isinstance(raw_segments, list):
-                raw_segments = []
-            video_report = transcription_result.get("video_report")
-            clip_meta = transcription_result.get("meta")
-            if clip_meta is not None and not isinstance(clip_meta, dict):
-                clip_meta = {}
-
-            segment_dicts = [s for s in raw_segments if isinstance(s, dict)]
-            transcript_segments = normalize_transcript_segments(segment_dicts)
-            full_text = segments_to_full_text(transcript_segments)
-            safe_card = json_safe_value(video_report) if video_report is not None else None
-            safe_meta = json_safe_value(clip_meta) if clip_meta else {}
-
-            transcript_payload = {
-                "source_file": video.filename,
-                "mime_type": video.content_type,
-                "extension": extension,
-                "segments": transcript_segments,
-                "full_text": full_text,
-                "video_report": safe_card,
-                "clip_meta": safe_meta,
-            }
-            clip.transcript = models.Transcript(transcript=transcript_payload)
-            clip.processing_status = "ready"
-            clip.processing_error = None
-            clip.provider_job_id = _extract_provider_job_id(safe_meta, safe_card)
-            clip.processing_completed_at = datetime.utcnow()
-
-            logger.info(
-                "[INGEST] Saved video %d file=%s clip_id=%s transcript_id=%s segments=%d",
-                index,
-                video.filename,
-                clip.id,
-                clip.transcript.id if clip.transcript is not None else None,
-                len(transcript_segments),
-            )
-
-        await db.flush()
-        logger.info(
-            "[INGEST] DB persist (single batch flush) duration_s=%.3f",
-            time.perf_counter() - t_persist,
-        )
-        t_commit = time.perf_counter()
-        await db.commit()
-        logger.info("[INGEST] DB commit duration_s=%.3f", time.perf_counter() - t_commit)
     except HTTPException:
         await db.rollback()
         raise
@@ -359,6 +264,136 @@ async def cancel_clip_processing(
     }
 
 
+async def _run_clip_transcription(
+    *,
+    session_id: int,
+    local_key: str,
+    clip_id: int,
+    video_bytes: bytes,
+    extension: str,
+    index: int,
+    file_name: str | None,
+    mime_type: str | None,
+    clip_correlation_id: str | None,
+) -> None:
+    try:
+        result = await transcribe_upload_for_ingest(
+            video_bytes,
+            extension=extension,
+            index=index,
+            file_name=file_name,
+            clip_correlation_id=clip_correlation_id,
+        )
+        print_received_transcript(
+            source=f"ingest clip_id={clip_id}",
+            transcript_id=clip_correlation_id,
+            segments=result.get("transcript"),
+        )
+        async with SessionLocal() as db:
+            await _persist_transcription_result(
+                db,
+                clip_id=clip_id,
+                file_name=file_name,
+                mime_type=mime_type,
+                extension=extension,
+                transcription_result=result,
+            )
+    except asyncio.CancelledError:
+        async with SessionLocal() as db:
+            await _mark_clip_cancelled(db, clip_id=clip_id)
+        raise
+    except Exception as exc:  # pragma: no cover - exercised through route behavior
+        logger.exception(
+            "[INGEST] Background transcription failed clip_id=%s file=%s",
+            clip_id,
+            file_name,
+            exc_info=exc,
+        )
+        async with SessionLocal() as db:
+            await _mark_clip_failed(db, clip_id=clip_id, error_message=str(exc))
+    finally:
+        await clip_task_registry.pop(session_id=session_id, local_key=local_key)
+
+
+async def _persist_transcription_result(
+    db: AsyncSession,
+    *,
+    clip_id: int,
+    file_name: str | None,
+    mime_type: str | None,
+    extension: str,
+    transcription_result: dict[str, Any],
+) -> None:
+    clip = await _get_clip_by_id(db, clip_id=clip_id)
+    if clip is None:
+        await db.rollback()
+        return
+
+    raw_segments = transcription_result.get("transcript") or []
+    if not isinstance(raw_segments, list):
+        raw_segments = []
+    video_report = transcription_result.get("video_report")
+    clip_meta = transcription_result.get("meta")
+    if clip_meta is not None and not isinstance(clip_meta, dict):
+        clip_meta = {}
+
+    segment_dicts = [s for s in raw_segments if isinstance(s, dict)]
+    transcript_segments = normalize_transcript_segments(segment_dicts)
+    full_text = segments_to_full_text(transcript_segments)
+    safe_card = json_safe_value(video_report) if video_report is not None else None
+    safe_meta = json_safe_value(clip_meta) if clip_meta else {}
+
+    transcript_payload = {
+        "source_file": file_name,
+        "mime_type": mime_type,
+        "extension": extension,
+        "segments": transcript_segments,
+        "full_text": full_text,
+        "video_report": safe_card,
+        "clip_meta": safe_meta,
+    }
+
+    clip.transcript = models.Transcript(transcript=transcript_payload)
+    clip.processing_status = "ready"
+    clip.processing_error = None
+    clip.provider_job_id = _extract_provider_job_id(safe_meta, safe_card)
+    clip.processing_completed_at = datetime.utcnow()
+    await db.commit()
+    logger.info(
+        "[INGEST] Saved background transcription file=%s clip_id=%s transcript_id=%s segments=%d",
+        file_name,
+        clip.id,
+        clip.transcript.id if clip.transcript is not None else None,
+        len(transcript_segments),
+    )
+
+
+async def _mark_clip_failed(
+    db: AsyncSession,
+    *,
+    clip_id: int,
+    error_message: str,
+) -> None:
+    clip = await _get_clip_by_id(db, clip_id=clip_id)
+    if clip is None:
+        await db.rollback()
+        return
+    clip.processing_status = "failed"
+    clip.processing_error = error_message
+    clip.processing_completed_at = datetime.utcnow()
+    await db.commit()
+
+
+async def _mark_clip_cancelled(db: AsyncSession, *, clip_id: int) -> None:
+    clip = await _get_clip_by_id(db, clip_id=clip_id)
+    if clip is None:
+        await db.rollback()
+        return
+    clip.processing_status = "cancelled"
+    clip.processing_cancelled_at = datetime.utcnow()
+    await db.commit()
+
+
 async def _build_session_payload(
     db: AsyncSession,
     *,
@@ -411,6 +446,11 @@ async def _get_clip_by_local_key(
             models.Clip.local_key == local_key,
         )
     )
+    return result.scalar_one_or_none()
+
+
+async def _get_clip_by_id(db: AsyncSession, *, clip_id: int) -> models.Clip | None:
+    result = await db.execute(select(models.Clip).where(models.Clip.id == clip_id))
     return result.scalar_one_or_none()
 
 

@@ -36,6 +36,26 @@ def _full_text_from_segments(segments: list[dict[str, Any]]) -> str:
     return " ".join(parts)
 
 
+def print_received_transcript(
+    *,
+    source: str,
+    transcript_id: Any = None,
+    full_text: str | None = None,
+    segments: list[dict[str, Any]] | None = None,
+) -> None:
+    transcript_text = str(full_text or "").strip()
+    if not transcript_text and isinstance(segments, list):
+        transcript_text = _full_text_from_segments(
+            [segment for segment in segments if isinstance(segment, dict)]
+        )
+    print(
+        f"[TRANSCRIPT_RECEIVED][{source}] "
+        f"transcript_id={transcript_id if transcript_id not in (None, '') else 'unknown'} "
+        f"text={transcript_text or '<empty>'}",
+        flush=True,
+    )
+
+
 async def transcribe_clip_modal(
     audio_bytes: bytes,
     suffix: str = ".m4a",

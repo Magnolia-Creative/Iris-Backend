@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
@@ -10,7 +11,14 @@ async def _fake_db() -> AsyncIterator[object]:
     yield object()
 
 
+@asynccontextmanager
+async def _noop_lifespan(_app):
+    yield
+
+
 def test_create_sentence_transcription_route(monkeypatch):
+    printed_lines: list[str] = []
+
     async def fake_transcribe_upload_to_sentences(audio_bytes, suffix=".m4a"):
         assert audio_bytes == b"audio"
         assert suffix == ".m4a"
@@ -32,13 +40,22 @@ def test_create_sentence_transcription_route(monkeypatch):
             "meta": {"provider": "modal"},
         }
 
-    monkeypatch.setattr(main, "transcribe_upload_to_sentences", fake_transcribe_upload_to_sentences)
+    def fake_print(*args, **kwargs):
+        printed_lines.append(" ".join(str(arg) for arg in args))
 
-    with TestClient(main.app) as client:
-        response = client.post(
-            "/transcriptions/sentences",
-            files={"audio": ("clip.m4a", b"audio", "audio/mp4")},
-        )
+    monkeypatch.setattr(main, "transcribe_upload_to_sentences", fake_transcribe_upload_to_sentences)
+    monkeypatch.setattr("builtins.print", fake_print)
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/transcriptions/sentences",
+                files={"audio": ("clip.m4a", b"audio", "audio/mp4")},
+            )
+    finally:
+        main.app.router.lifespan_context = original_lifespan
 
     assert response.status_code == 200
     payload = response.json()
@@ -46,11 +63,15 @@ def test_create_sentence_transcription_route(monkeypatch):
     assert payload["full_text"] == "Hello world."
     assert payload["sentences"][0]["text"] == "Hello world."
     assert payload["meta"]["provider"] == "modal"
+    assert any(
+        "[TRANSCRIPT_RECEIVED][main_endpoint]" in line and "Hello world." in line
+        for line in printed_lines
+    )
 
 
 def test_create_project_agent_session_route(monkeypatch):
     async def fake_create_agent_session(db, *, session_name=None, project_name=None):
-        assert session_name == "Launch Day"
+        assert session_name is None
         assert project_name == "Launch Day"
         return {
             "session_id": 7,
@@ -67,9 +88,14 @@ def test_create_project_agent_session_route(monkeypatch):
 
     monkeypatch.setattr(main, "create_agent_session", fake_create_agent_session)
     main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
 
-    with TestClient(main.app) as client:
-        response = client.post("/projects/agent-sessions", json={"project_name": "Launch Day"})
+    try:
+        with TestClient(main.app) as client:
+            response = client.post("/projects/agent-sessions", json={"project_name": "Launch Day"})
+    finally:
+        main.app.router.lifespan_context = original_lifespan
 
     main.app.dependency_overrides.clear()
     assert response.status_code == 200
@@ -86,9 +112,66 @@ def test_process_project_clip_batch_route(monkeypatch):
         return {
             "session_id": 7,
             "session_name": "Launch Day",
-            "session_status": "ready",
+            "session_status": "processing",
             "project_id": 11,
             "project_name": "Launch Day",
+            "uploaded_count": 1,
+            "pending_clip_count": 1,
+            "settled_clip_count": 0,
+            "ready_for_websocket": False,
+            "videos": [
+                {
+                    "index": 1,
+                    "session_id": 7,
+                    "project_id": 11,
+                    "clip_id": 99,
+                    "transcript_id": None,
+                    "local_key": "abc-123",
+                    "file_name": "clip.m4a",
+                    "mime_type": "audio/mp4",
+                    "extension": ".m4a",
+                    "processing_status": "processing",
+                    "processing_error": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main, "process_project_clips", fake_process_project_clips)
+    main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/projects/11/clips/process",
+                data={"session_id": "7", "local_key": "abc-123"},
+                files={"videos": ("clip.m4a", b"audio", "audio/mp4")},
+            )
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+
+    main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["ready_for_websocket"] is False
+    assert response.json()["pending_clip_count"] == 1
+    assert response.json()["videos"][0]["local_key"] == "abc-123"
+    assert "file_size_bytes" not in response.json()["videos"][0]
+    assert "transcript_segments" not in response.json()["videos"][0]
+    assert "transcript_full_text" not in response.json()["videos"][0]
+    assert "video_report" not in response.json()["videos"][0]
+    assert "clip_meta" not in response.json()["videos"][0]
+
+
+def test_get_session_status_route(monkeypatch):
+    async def fake_get_persisted_session_data(db, session_id, *, include_ingest_details=False):
+        assert session_id == 7
+        assert include_ingest_details is False
+        return {
+            "session_id": 7,
+            "session_name": "Launch Day",
+            "session_status": "ready",
+            "project_id": 11,
             "uploaded_count": 1,
             "pending_clip_count": 0,
             "settled_clip_count": 1,
@@ -110,25 +193,21 @@ def test_process_project_clip_batch_route(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(main, "process_project_clips", fake_process_project_clips)
+    monkeypatch.setattr(main, "get_persisted_session_data", fake_get_persisted_session_data)
     main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
 
-    with TestClient(main.app) as client:
-        response = client.post(
-            "/projects/11/clips/process",
-            data={"session_id": "7", "local_key": "abc-123"},
-            files={"videos": ("clip.m4a", b"audio", "audio/mp4")},
-        )
+    try:
+        with TestClient(main.app) as client:
+            response = client.get("/sessions/7")
+    finally:
+        main.app.router.lifespan_context = original_lifespan
 
     main.app.dependency_overrides.clear()
     assert response.status_code == 200
+    assert response.json()["session_status"] == "ready"
     assert response.json()["ready_for_websocket"] is True
-    assert response.json()["videos"][0]["local_key"] == "abc-123"
-    assert "file_size_bytes" not in response.json()["videos"][0]
-    assert "transcript_segments" not in response.json()["videos"][0]
-    assert "transcript_full_text" not in response.json()["videos"][0]
-    assert "video_report" not in response.json()["videos"][0]
-    assert "clip_meta" not in response.json()["videos"][0]
 
 
 def test_cancel_project_clip_route(monkeypatch):
@@ -148,9 +227,14 @@ def test_cancel_project_clip_route(monkeypatch):
 
     monkeypatch.setattr(main, "cancel_clip_processing", fake_cancel_clip_processing)
     main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
 
-    with TestClient(main.app) as client:
-        response = client.delete("/projects/11/clips/abc-123?session_id=7")
+    try:
+        with TestClient(main.app) as client:
+            response = client.delete("/projects/11/clips/abc-123?session_id=7")
+    finally:
+        main.app.router.lifespan_context = original_lifespan
 
     main.app.dependency_overrides.clear()
     assert response.status_code == 200
