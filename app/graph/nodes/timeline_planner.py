@@ -52,7 +52,7 @@ async def _timeline_context(state: SessionGraphState) -> list[dict[str, Any]]:
     context: list[dict[str, Any]] = []
     cleanup_plan = state.get("cleanup_plan") or {}
     trim_suggestions = cleanup_plan.get("trim_suggestions") or []
-    for clip in state.get("clips", []):
+    for index, clip in enumerate(state.get("clips", []), start=1):
         cache_key = clip.get("transcript_cache_key")
         transcript_excerpt = ""
         if cache_key:
@@ -61,7 +61,9 @@ async def _timeline_context(state: SessionGraphState) -> list[dict[str, Any]]:
                 transcript_excerpt = str(cached.get("full_text") or "")
         context.append(
             {
+                "source_order": index,
                 "clip_id": clip.get("clip_id"),
+                "local_key": clip.get("local_key"),
                 "summary": clip.get("summary"),
                 "metadata": clip.get("metadata", {}),
                 "transcript_excerpt": transcript_excerpt,
@@ -113,6 +115,14 @@ async def timeline_planner_node(
                 "a targeted adjustment of the prior timeline. Default to targeted adjustment unless "
                 "the user explicitly requests replacing everything. For targeted adjustments, keep "
                 "unchanged timeline entries from Prior timeline and modify only the requested part.\n"
+                "Each clip in Clip context may include a local_key. When you use a clip in the "
+                "timeline, preserve that clip's local_key on the matching timeline entry so clip_id "
+                "and local_key stay aligned.\n"
+                "Clip context is listed in source_order. Interpret user references like 'first clip', "
+                "'second clip', 'last clip', or similar positional language against that source_order. "
+                "If the user asks for edits on a specific clip by position, apply those edits to that "
+                "same clip and keep that same relative order in the assembled timeline unless the user "
+                "explicitly asks you to reorder clips.\n"
                 "Produce the proposed sequence, choosing clips, in/out points, and rationale.",
             ),
         ]

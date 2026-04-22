@@ -1,3 +1,6 @@
+import asyncio
+
+from app.graph.nodes.timeline_planner import _timeline_context
 from app.graph.nodes.timeline_validator import _validate_timeline
 from app.services.session_state_builder import build_initial_state_from_session_payload
 
@@ -69,3 +72,63 @@ def test_validate_timeline_attaches_local_keys_from_clip_state():
         "clip-local-106",
         "clip-local-106",
     ]
+
+
+def test_timeline_context_includes_clip_local_keys():
+    context = asyncio.run(
+        _timeline_context(
+            {
+                "clips": [
+                    {
+                        "clip_id": "106",
+                        "local_key": "clip-local-106",
+                        "summary": "hello world",
+                        "metadata": {"duration_seconds": 80.0},
+                        "transcript_cache_key": None,
+                    }
+                ],
+                "cleanup_plan": {"trim_suggestions": []},
+            }
+        )
+    )
+
+    assert context == [
+        {
+            "source_order": 1,
+            "clip_id": "106",
+            "local_key": "clip-local-106",
+            "summary": "hello world",
+            "metadata": {"duration_seconds": 80.0},
+            "transcript_excerpt": "",
+            "trim_suggestions": [],
+        }
+    ]
+
+
+def test_timeline_context_includes_source_order_for_multiple_clips():
+    context = asyncio.run(
+        _timeline_context(
+            {
+                "clips": [
+                    {
+                        "clip_id": "106",
+                        "local_key": "clip-local-106",
+                        "summary": "first clip",
+                        "metadata": {},
+                        "transcript_cache_key": None,
+                    },
+                    {
+                        "clip_id": "107",
+                        "local_key": "clip-local-107",
+                        "summary": "second clip",
+                        "metadata": {},
+                        "transcript_cache_key": None,
+                    },
+                ],
+                "cleanup_plan": {"trim_suggestions": []},
+            }
+        )
+    )
+
+    assert [entry["source_order"] for entry in context] == [1, 2]
+    assert [entry["clip_id"] for entry in context] == ["106", "107"]
