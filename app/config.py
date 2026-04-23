@@ -35,6 +35,10 @@ class Settings:
         )
         self.assemblyai_ssl_verify = _env_bool("ASSEMBLYAI_SSL_VERIFY", True)
         self.assemblyai_ca_bundle = os.getenv("ASSEMBLYAI_CA_BUNDLE")
+        # For outbound TLS (e.g. OpenAI WebSocket): path to a PEM of trusted roots.
+        # If unset, code uses certifi’s bundle. Set to your corporate root CA if behind SSL inspection.
+        # Standard env: SSL_CERT_FILE; alias: SSL_CA_BUNDLE.
+        self.outbound_ssl_cafile = os.getenv("SSL_CERT_FILE") or os.getenv("SSL_CA_BUNDLE")
 
 
 settings = Settings()

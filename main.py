@@ -7,7 +7,18 @@ import logging
 from typing import Any
 from typing import Literal
 
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
@@ -34,6 +45,11 @@ from app.services.session_ingest import (
     process_project_clips,
 )
 from app.services.session_state_builder import build_initial_state_from_session_payload
+from app.services.realtime_transcription import (
+    ALLOWED_TRANSCRIBE_MODELS,
+    DEFAULT_TRANSCRIBE_MODEL,
+    stream_transcription,
+)
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
 from app import models  # noqa: F401
@@ -432,3 +448,24 @@ async def session_websocket(
             }
         )
         await websocket.close(code=1011)
+
+
+@app.websocket("/ws/transcribe")
+async def transcribe_websocket(
+    websocket: WebSocket,
+    model: str = Query(default=DEFAULT_TRANSCRIBE_MODEL),
+) -> None:
+    await websocket.accept()
+    if model not in ALLOWED_TRANSCRIBE_MODELS:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "detail": f"Unsupported model: {model}. "
+                    f"Allowed: {', '.join(sorted(ALLOWED_TRANSCRIBE_MODELS))}",
+                }
+            )
+        )
+        await websocket.close(code=1008)
+        return
+    await stream_transcription(websocket, model=model)

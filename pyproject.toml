@@ -19,6 +19,7 @@ dependencies = [
   "python-multipart>=0.0.22",
   "numpy>=2.4.3",
   "certifi",
+  "websockets>=12",
 ]
 
 [project.optional-dependencies]
