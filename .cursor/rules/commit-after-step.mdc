@@ -1,0 +1,17 @@
+---
+description: Commit completed implementation steps immediately
+alwaysApply: true
+---
+
+# Commit After Each Implementation Step
+
+After completing each implementation step, immediately stage and commit the work:
+
+```bash
+git add -A
+git commit -m "<descriptive message>"
+```
+
+This is a standing explicit user instruction to commit. Do not ask for confirmation before committing completed implementation steps.
+
+Keep normal git safety practices in place: do not commit secrets, do not revert unrelated user changes, and use descriptive commit messages that summarize the completed step.
