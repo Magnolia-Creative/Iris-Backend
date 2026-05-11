@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.graph.state import ClipState, SessionGraphState
+from app.automake.state import ClipState, SessionGraphState
 
 
 def _build_summary(full_text: str, fallback_name: str | None) -> str:

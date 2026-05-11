@@ -4,8 +4,8 @@ from typing import Any, Awaitable, Callable
 from langchain_openai import ChatOpenAI
 
 from app.config import settings
-from app.graph.build import build_session_graph
-from app.graph.state import SessionGraphState
+from app.automake.build import build_session_graph
+from app.automake.state import SessionGraphState
 from app.services.session_debug_store import initialize_session_debug, update_session_debug_state
 from app.services.session_graph_state_store import persist_session_graph_state
 

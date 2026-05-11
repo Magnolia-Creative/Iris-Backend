@@ -4,14 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi.testclient import TestClient
 
 import main
-from app.services.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
-from app.services.intent_compiler.compiler import IntentCompiler
-from app.services.intent_compiler.llm import (
+from app.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
+from app.intent_compiler.compiler import IntentCompiler
+from app.intent_compiler.llm import (
     IntentCompilerService,
     IntentLLMCompiler,
     _capability_embedding_text,
 )
-from app.services.intent_compiler.models import (
+from app.intent_compiler.models import (
     CompileSource,
     EffectCapability,
     EffectCapabilityParameter,

@@ -6,7 +6,7 @@ import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from app.services.intent_compiler.models import (
+from app.intent_compiler.models import (
     Action,
     ActionType,
     Clip,

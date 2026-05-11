@@ -8,9 +8,9 @@ from typing import Any, Protocol
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.config import settings
-from app.services.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
-from app.services.intent_compiler.compiler import IntentCompiler
-from app.services.intent_compiler.models import (
+from app.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
+from app.intent_compiler.compiler import IntentCompiler
+from app.intent_compiler.models import (
     EffectCapability,
     ExperimentalEffectOperation,
     ExperimentalEffectPlan,

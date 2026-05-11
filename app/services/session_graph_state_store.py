@@ -3,8 +3,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import models
-from app.graph.state import SessionGraphState
+from app.database import models
+from app.automake.state import SessionGraphState
 
 
 def _normalize_session_graph_state(

@@ -26,7 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
-from app.graph.runtime import (
+from app.automake.runtime import (
     approve_session_timeline,
     get_session_state,
     resume_session_from_reprompt,
@@ -51,13 +51,13 @@ from app.services.realtime_transcription import (
     DEFAULT_TRANSCRIBE_MODEL,
     stream_transcription,
 )
-from app.services.intent_compiler.llm import IntentCompilerService
-from app.services.intent_compiler.models import IntentCompileRequest, IntentCompilerContext
-from app.services.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
-from app.services.intent_compiler.voice import stream_voice_intent
+from app.intent_compiler.llm import IntentCompilerService
+from app.intent_compiler.models import IntentCompileRequest, IntentCompilerContext
+from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
+from app.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
-from app import models  # noqa: F401
+from app.database import models  # noqa: F401
 
 
 logging.basicConfig(

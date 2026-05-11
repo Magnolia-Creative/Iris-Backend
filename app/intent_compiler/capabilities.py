@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.intent_compiler.models import EffectCapability, EffectCapabilityParameter
+from app.intent_compiler.models import EffectCapability, EffectCapabilityParameter
 
 
 DEFAULT_EFFECT_CAPABILITIES: list[EffectCapability] = [

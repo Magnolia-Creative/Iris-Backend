@@ -6,7 +6,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 
 from app.config import settings
-from app.graph.state import DecisionAgentOutput, SessionGraphState
+from app.automake.state import DecisionAgentOutput, SessionGraphState
 
 
 logger = logging.getLogger(__name__)

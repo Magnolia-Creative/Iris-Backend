@@ -11,8 +11,8 @@ from websockets import exceptions as wsexceptions
 from websockets.asyncio.client import connect
 
 from app.config import settings
-from app.services.intent_compiler.llm import IntentCompilerService
-from app.services.intent_compiler.models import IntentCompilerContext
+from app.intent_compiler.llm import IntentCompilerService
+from app.intent_compiler.models import IntentCompilerContext
 from app.services.realtime_transcription import (
     DEFAULT_TRANSCRIBE_MODEL,
     OPENAI_BETA,

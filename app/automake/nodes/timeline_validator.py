@@ -3,7 +3,7 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-from app.graph.state import SessionGraphState, TimelineValidationResult, ValidatedTimelineEntry
+from app.automake.state import SessionGraphState, TimelineValidationResult, ValidatedTimelineEntry
 
 
 logger = logging.getLogger(__name__)

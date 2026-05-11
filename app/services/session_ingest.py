@@ -9,8 +9,8 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import models
 from app.database import SessionLocal
+from app.database import models
 from app.services.clip_task_registry import clip_task_registry
 from app.services.transcript_cache import delete_cached_transcript
 from app.services.transcript_normalize import (

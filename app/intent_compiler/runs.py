@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.services.intent_compiler.models import IntentCompilerContext
+from app.intent_compiler.models import IntentCompilerContext
 
 
 @dataclass(frozen=True)
