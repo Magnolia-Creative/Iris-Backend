@@ -54,6 +54,40 @@ def _sample_context() -> dict:
     }
 
 
+def _multi_clip_context() -> dict:
+    return {
+        "timelineId": "timeline-test",
+        "selectedClipId": "clip-b",
+        "selectedTrackId": "track-video",
+        "selectedRange": None,
+        "playheadTimeUs": 10_000_000,
+        "clipsById": {
+            "clip-a": {
+                "clip_id": "clip-a",
+                "track_id": "track-video",
+                "media_id": "media-a",
+                "source_range": {"start": 0, "end": 5_000_000},
+                "timeline_range": {"start": 0, "end": 5_000_000},
+            },
+            "clip-b": {
+                "clip_id": "clip-b",
+                "track_id": "track-video",
+                "media_id": "media-b",
+                "source_range": {"start": 0, "end": 10_000_000},
+                "timeline_range": {"start": 5_000_000, "end": 15_000_000},
+            },
+            "clip-c": {
+                "clip_id": "clip-c",
+                "track_id": "track-video",
+                "media_id": "media-c",
+                "source_range": {"start": 0, "end": 5_000_000},
+                "timeline_range": {"start": 15_000_000, "end": 20_000_000},
+            },
+        },
+        "orderedClipIdsByTrackId": {"track-video": ["clip-a", "clip-b", "clip-c"]},
+    }
+
+
 def test_effect_only_plan_preserves_experimental_effects_without_actions():
     context = IntentCompilerContext.model_validate(_sample_context())
     plan = SemanticEditPlan(
@@ -367,7 +401,7 @@ def test_compile_prompt_prioritizes_selected_clip_for_ambiguous_first_duration()
         async def plan_experimental_effects(self, **_kwargs):
             raise AssertionError("Effect planning should not run for a trim operation")
 
-    context = IntentCompilerContext.model_validate(_sample_context())
+    context = IntentCompilerContext.model_validate(_multi_clip_context())
     service = IntentCompilerService(
         llm_compiler=FakeLLMCompiler(),
         embedding_client=object(),
@@ -402,7 +436,7 @@ def test_compile_prompt_preserves_explicit_first_clip_target():
         async def plan_experimental_effects(self, **_kwargs):
             raise AssertionError("Effect planning should not run for a trim operation")
 
-    context = IntentCompilerContext.model_validate(_sample_context())
+    context = IntentCompilerContext.model_validate(_multi_clip_context())
     service = IntentCompilerService(
         llm_compiler=FakeLLMCompiler(),
         embedding_client=object(),
