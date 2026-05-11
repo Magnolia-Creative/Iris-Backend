@@ -140,6 +140,8 @@ async def stream_voice_intent(
     finally:
         with contextlib.suppress(wsexceptions.ConnectionClosed, OSError, RuntimeError):
             await oai.close()
+        with contextlib.suppress(WebSocketDisconnect, OSError, RuntimeError):
+            await client_ws.close()
 
 
 async def _handle_openai_event(
