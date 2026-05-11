@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
@@ -5,14 +6,16 @@ from fastapi.testclient import TestClient
 import main
 from app.services.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
 from app.services.intent_compiler.compiler import IntentCompiler
-from app.services.intent_compiler.llm import IntentCompilerService
+from app.services.intent_compiler.llm import IntentCompilerService, IntentLLMCompiler
 from app.services.intent_compiler.models import (
     CompileSource,
     ExperimentalEffectOperation,
+    ExperimentalEffectPlan,
     IntentCompileResult,
     IntentCompileWarning,
     IntentCompilerContext,
     RelevantEffectCapability,
+    SemanticEffectRequest,
     SemanticEditPlan,
 )
 
@@ -87,6 +90,48 @@ def test_effect_parameters_are_clamped_to_capability_schema():
 
     assert warnings == []
     assert valid[0].parameters["amount"] == 1
+
+
+def test_intent_llm_compiler_uses_function_calling_for_planner_schemas():
+    class FakeStructuredLLM:
+        def __init__(self, result):
+            self.result = result
+
+        async def ainvoke(self, _messages):
+            return self.result
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = []
+
+        def with_structured_output(self, schema, **kwargs):
+            self.calls.append((schema, kwargs))
+            if schema is SemanticEditPlan:
+                return FakeStructuredLLM(SemanticEditPlan())
+            if schema is ExperimentalEffectPlan:
+                return FakeStructuredLLM(ExperimentalEffectPlan())
+            raise AssertionError(f"Unexpected schema: {schema}")
+
+    fake_llm = FakeLLM()
+    compiler = IntentLLMCompiler(llm=fake_llm)
+    context = IntentCompilerContext.model_validate(_sample_context())
+
+    asyncio.run(compiler.make_semantic_plan("make it vintage", context))
+    asyncio.run(
+        compiler.plan_experimental_effects(
+            original_prompt="make it vintage",
+            effect_request=SemanticEffectRequest(sourceText="make it vintage"),
+            relevant_capabilities=[
+                RelevantEffectCapability(capability=DEFAULT_EFFECT_CAPABILITIES[0], score=1.0)
+            ],
+            context=context,
+        )
+    )
+
+    assert fake_llm.calls == [
+        (SemanticEditPlan, {"method": "function_calling"}),
+        (ExperimentalEffectPlan, {"method": "function_calling"}),
+    ]
 
 
 def test_text_intent_run_streams_final_result(monkeypatch):

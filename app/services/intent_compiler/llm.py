@@ -38,7 +38,7 @@ class IntentLLMCompiler:
         self.llm = llm or _get_llm()
 
     async def make_semantic_plan(self, prompt: str, context: IntentCompilerContext) -> SemanticEditPlan:
-        llm = self.llm.with_structured_output(SemanticEditPlan)
+        llm = self.llm.with_structured_output(SemanticEditPlan, method="function_calling")
         return await llm.ainvoke(
             [
                 (
@@ -60,7 +60,7 @@ class IntentLLMCompiler:
         relevant_capabilities: list[RelevantEffectCapability],
         context: IntentCompilerContext,
     ) -> ExperimentalEffectPlan:
-        llm = self.llm.with_structured_output(ExperimentalEffectPlan)
+        llm = self.llm.with_structured_output(ExperimentalEffectPlan, method="function_calling")
         return await llm.ainvoke(
             [
                 (
