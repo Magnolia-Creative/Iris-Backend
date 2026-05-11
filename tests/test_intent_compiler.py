@@ -20,8 +20,10 @@ from app.intent_compiler.models import (
     IntentCompileResult,
     IntentCompileWarning,
     IntentCompilerContext,
+    IntentEditType,
     RelevantEffectCapability,
     SemanticEffectRequest,
+    SemanticEditOperation,
     SemanticEditPlan,
 )
 from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
@@ -214,6 +216,65 @@ def test_compile_prompt_reports_embedding_unavailable_when_effect_retrieval_fail
     assert result.actions == []
     assert IntentCompileWarning.embeddingUnavailable in result.warnings
     assert IntentCompileWarning.noActionProduced in result.warnings
+
+
+def test_compile_prompt_repairs_selected_clip_split_in_half_clarification():
+    class FakeLLMCompiler:
+        async def make_semantic_plan(self, _prompt, _context):
+            return SemanticEditPlan(
+                needsClarification=True,
+                clarificationQuestion="Which clip should I split?",
+            )
+
+        async def plan_experimental_effects(self, **_kwargs):
+            raise AssertionError("Effect planning should not run for a split operation")
+
+    context = IntentCompilerContext.model_validate(_sample_context())
+    service = IntentCompilerService(
+        llm_compiler=FakeLLMCompiler(),
+        embedding_client=object(),
+    )
+
+    result = asyncio.run(service.compile_prompt(prompt="Split this clip in half.", context=context))
+
+    assert result.needsClarification is False
+    assert result.confidence == 0.9
+    assert result.actions[0].payload["splitClip"] == {"clipId": "clip-b", "atTimeUs": 10_000_000}
+    assert IntentCompileWarning.ambiguousTarget not in result.warnings
+
+
+def test_compile_prompt_assumes_selected_clip_for_targetless_operation():
+    class FakeLLMCompiler:
+        async def make_semantic_plan(self, _prompt, _context):
+            return SemanticEditPlan(
+                operations=[
+                    SemanticEditOperation(
+                        type=IntentEditType.splitClip,
+                        sourceText="Split this clip in half.",
+                        target=None,
+                        parameters={"position": {"type": "fractionOfClip", "value": 0.5}},
+                        confidence=0.2,
+                    )
+                ],
+                needsClarification=True,
+                clarificationQuestion="Which clip should I split?",
+            )
+
+        async def plan_experimental_effects(self, **_kwargs):
+            raise AssertionError("Effect planning should not run for a split operation")
+
+    context = IntentCompilerContext.model_validate(_sample_context())
+    service = IntentCompilerService(
+        llm_compiler=FakeLLMCompiler(),
+        embedding_client=object(),
+    )
+
+    result = asyncio.run(service.compile_prompt(prompt="Split this clip in half.", context=context))
+
+    assert result.needsClarification is False
+    assert result.confidence == 0.85
+    assert result.actions[0].payload["splitClip"] == {"clipId": "clip-b", "atTimeUs": 10_000_000}
+    assert IntentCompileWarning.ambiguousTarget not in result.warnings
 
 
 def test_intent_llm_compiler_uses_function_calling_for_planner_schemas():

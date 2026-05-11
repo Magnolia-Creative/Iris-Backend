@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 import json
 from math import sqrt
+import re
 from typing import Any, Protocol
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -18,8 +19,11 @@ from app.intent_compiler.models import (
     IntentCompileResult,
     IntentCompileWarning,
     IntentCompilerContext,
+    IntentEditType,
     RelevantEffectCapability,
+    SemanticClipReference,
     SemanticEffectRequest,
+    SemanticEditOperation,
     SemanticEditPlan,
 )
 
@@ -104,7 +108,15 @@ class IntentLLMCompiler:
             "dreamy, grainy, or moody requests go in effectRequests, not operations.\n"
             "- Captions, audio, transitions, generative media, or unsupported non-visual effects should be unknown.\n"
             "- Use target objects only, never plain target strings. Use only ids in ctx.\n"
-            "- If required target/time/order is missing, set needsClarification=true and ask a short question.\n"
+            "- If ctx.selectedClipId is non-null, treat targetless clip edits and phrases like "
+            "'this clip', 'the clip', 'selected clip', 'current clip', and 'it' as {\"type\":\"selectedClip\"}.\n"
+            "- If no clip is selected but ctx.currentClipAtPlayheadId is non-null, use "
+            "{\"type\":\"currentClipAtPlayhead\"} for targetless clip edits.\n"
+            "- For 'split in half', 'split down the middle', or similar, use "
+            "parameters.position={\"type\":\"fractionOfClip\",\"value\":0.5}.\n"
+            "- If a split position is omitted and ctx.playheadTimeUs is inside the target clip, use "
+            "parameters.position={\"type\":\"playhead\"}.\n"
+            "- Only set needsClarification=true when required target/time/order cannot be inferred from ctx.\n"
             "- Preserve explicit units from user text, e.g. '2 seconds' means unit=second.\n"
             "Target shapes:\n"
             '{"type":"selectedClip"}, {"type":"clipId","clipId":"existing"}, '
@@ -170,6 +182,7 @@ class IntentCompilerService:
     ) -> IntentCompileResult:
         await _emit(event_handler, {"type": "planner_started", "status": "Parsing prompt."})
         semantic_plan = await self.llm_compiler.make_semantic_plan(prompt, context)
+        semantic_plan = _apply_contextual_assumptions(prompt, context, semantic_plan)
         await _emit(
             event_handler,
             {
@@ -205,21 +218,22 @@ class IntentCompilerService:
                 context=context,
             )
             validated = self._validate_effect_operations(effect_plan.operations, relevant)
-            effect_operations.extend(validated[0])
+            validated_operations = _assume_effect_operation_targets(validated[0], context)
+            effect_operations.extend(validated_operations)
             warnings.extend(validated[1])
             await _emit(
                 event_handler,
                 {
                     "type": "effect_planner_completed",
                     "intent": effect_request.intent,
-                    "operations": [operation.model_dump() for operation in validated[0]],
+                    "operations": [operation.model_dump() for operation in validated_operations],
                 },
             )
 
         merged_plan = SemanticEditPlan(
             operations=semantic_plan.operations,
             effectRequests=semantic_plan.effectRequests,
-            experimentalEffectOperations=effect_operations,
+            experimentalEffectOperations=_assume_effect_operation_targets(effect_operations, context),
             needsClarification=semantic_plan.needsClarification,
             clarificationQuestion=semantic_plan.clarificationQuestion,
         )
@@ -308,6 +322,136 @@ class IntentCompilerService:
                 )
             valid.append(operation.model_copy(update={"parameters": params, "parameterNotes": parameter_notes}))
         return valid, warnings
+
+
+_CLIP_EDIT_TYPES = {
+    IntentEditType.splitClip,
+    IntentEditType.removeClip,
+    IntentEditType.trimClip,
+    IntentEditType.moveClip,
+}
+
+_SPLIT_TERMS = re.compile(r"\b(split|cut|slice)\b", re.IGNORECASE)
+_HALF_TERMS = re.compile(r"\b(half|middle|midpoint|center|centre)\b", re.IGNORECASE)
+_REMOVE_TERMS = re.compile(r"\b(delete|remove)\b", re.IGNORECASE)
+_SELECTED_REFERENCE_TERMS = re.compile(r"\b(this|that|the|selected|current|clip|it)\b", re.IGNORECASE)
+_BROAD_TARGET_TERMS = re.compile(r"\b(all|every|everything|entire timeline)\b", re.IGNORECASE)
+
+
+def _apply_contextual_assumptions(
+    prompt: str,
+    context: IntentCompilerContext,
+    plan: SemanticEditPlan,
+) -> SemanticEditPlan:
+    target = _preferred_clip_target(context)
+    if target is None:
+        return plan
+
+    fallback = _fallback_selected_clip_plan(prompt, target)
+    if fallback and plan.needsClarification and not (plan.operations or plan.effectRequests or plan.experimentalEffectOperations):
+        return fallback
+
+    operations = [_assume_operation_target(operation, target) for operation in plan.operations]
+    effect_requests = [
+        request.model_copy(update={"target": target, "confidence": max(float(request.confidence), 0.85)})
+        if request.target is None
+        else request
+        for request in plan.effectRequests
+    ]
+    effect_operations = _assume_effect_operation_targets(plan.experimentalEffectOperations, context)
+
+    needs_clarification = plan.needsClarification
+    clarification_question = plan.clarificationQuestion
+    if plan.needsClarification and (
+        any(operation.type in _CLIP_EDIT_TYPES for operation in operations) or effect_requests or effect_operations
+    ):
+        needs_clarification = False
+        clarification_question = None
+
+    return plan.model_copy(
+        update={
+            "operations": operations,
+            "effectRequests": effect_requests,
+            "experimentalEffectOperations": effect_operations,
+            "needsClarification": needs_clarification,
+            "clarificationQuestion": clarification_question,
+        }
+    )
+
+
+def _assume_operation_target(
+    operation: SemanticEditOperation,
+    target: SemanticClipReference,
+) -> SemanticEditOperation:
+    if operation.type not in _CLIP_EDIT_TYPES or operation.target is not None:
+        return operation
+    return operation.model_copy(
+        update={
+            "target": target,
+            "confidence": max(float(operation.confidence or 0), 0.85),
+        }
+    )
+
+
+def _assume_effect_operation_targets(
+    operations: list[ExperimentalEffectOperation],
+    context: IntentCompilerContext,
+) -> list[ExperimentalEffectOperation]:
+    target = _preferred_clip_target(context)
+    if target is None:
+        return operations
+    return [
+        operation.model_copy(
+            update={
+                "target": target,
+                "confidence": max(float(operation.confidence), 0.85),
+            }
+        )
+        if operation.target is None
+        else operation
+        for operation in operations
+    ]
+
+
+def _preferred_clip_target(context: IntentCompilerContext) -> SemanticClipReference | None:
+    if context.selectedClipId and context.clip(context.selectedClipId):
+        return SemanticClipReference(type="selectedClip")
+    if _current_clip_at_playhead_id(context):
+        return SemanticClipReference(type="currentClipAtPlayhead")
+    return None
+
+
+def _fallback_selected_clip_plan(prompt: str, target: SemanticClipReference) -> SemanticEditPlan | None:
+    if _BROAD_TARGET_TERMS.search(prompt):
+        return None
+    if _SPLIT_TERMS.search(prompt):
+        position = {"type": "fractionOfClip", "value": 0.5} if _HALF_TERMS.search(prompt) else {"type": "playhead"}
+        return SemanticEditPlan(
+            operations=[
+                SemanticEditOperation(
+                    type=IntentEditType.splitClip,
+                    sourceText=prompt,
+                    target=target,
+                    parameters={"position": position},
+                    confidence=0.9,
+                )
+            ],
+            needsClarification=False,
+        )
+    if _REMOVE_TERMS.search(prompt) and _SELECTED_REFERENCE_TERMS.search(prompt):
+        return SemanticEditPlan(
+            operations=[
+                SemanticEditOperation(
+                    type=IntentEditType.removeClip,
+                    sourceText=prompt,
+                    target=target,
+                    parameters={},
+                    confidence=0.9,
+                )
+            ],
+            needsClarification=False,
+        )
+    return None
 
 
 def _inferred_effect_parameter_value(
