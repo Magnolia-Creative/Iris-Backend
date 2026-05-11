@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import json
-from typing import Any
+from math import sqrt
+from typing import Any, Protocol
 
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.config import settings
 from app.services.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
@@ -23,6 +24,12 @@ from app.services.intent_compiler.models import (
 
 
 IntentEventHandler = Callable[[dict[str, Any]], Awaitable[None]]
+EFFECT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+class EffectEmbeddingClient(Protocol):
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        ...
 
 
 def _get_llm() -> Any:
@@ -31,6 +38,10 @@ def _get_llm() -> Any:
         model=settings.intent_openai_model,
         temperature=0,
     )
+
+
+def _get_effect_embeddings() -> EffectEmbeddingClient:
+    return OpenAIEmbeddings(api_key=settings.openai_api_key, model=EFFECT_EMBEDDING_MODEL)
 
 
 class IntentLLMCompiler:
@@ -137,10 +148,13 @@ class IntentCompilerService:
         llm_compiler: IntentLLMCompiler | None = None,
         compiler: IntentCompiler | None = None,
         capabilities: list[EffectCapability] | None = None,
+        embedding_client: EffectEmbeddingClient | None = None,
     ) -> None:
         self.llm_compiler = llm_compiler or IntentLLMCompiler()
         self.compiler = compiler or IntentCompiler()
         self.capabilities = capabilities or DEFAULT_EFFECT_CAPABILITIES
+        self.embedding_client = embedding_client or _get_effect_embeddings()
+        self._capability_embedding_cache: tuple[tuple[str, ...], list[list[float]]] | None = None
 
     async def compile_prompt(
         self,
@@ -163,7 +177,11 @@ class IntentCompilerService:
         effect_operations: list[ExperimentalEffectOperation] = []
         warnings: list[IntentCompileWarning] = []
         for effect_request in semantic_plan.effectRequests:
-            relevant = self._relevant_capabilities(effect_request)
+            try:
+                relevant = await self._relevant_capabilities(effect_request)
+            except Exception:
+                warnings.append(IntentCompileWarning.embeddingUnavailable)
+                continue
             if not relevant:
                 warnings.append(IntentCompileWarning.unsupportedIntent)
                 continue
@@ -213,20 +231,34 @@ class IntentCompilerService:
         )
         return result
 
-    def _relevant_capabilities(self, effect_request: SemanticEffectRequest) -> list[RelevantEffectCapability]:
+    async def _relevant_capabilities(
+        self,
+        effect_request: SemanticEffectRequest,
+    ) -> list[RelevantEffectCapability]:
         query_parts = [effect_request.sourceText, effect_request.intent or "", *effect_request.attributes]
-        query = " ".join(query_parts).lower()
-        scored: list[RelevantEffectCapability] = []
-        for capability in self.capabilities:
-            haystack = " ".join(
-                [capability.operation, capability.description, capability.retrievalText, *capability.examples]
-            ).lower()
-            score = _keyword_score(query, haystack)
-            if score > 0:
-                scored.append(RelevantEffectCapability(capability=capability, score=score))
-        if not scored and query.strip():
-            scored = [RelevantEffectCapability(capability=capability, score=0.01) for capability in self.capabilities]
+        query = " ".join(part for part in query_parts if part).strip()
+        if not query or not self.capabilities:
+            return []
+
+        query_embedding = (await self.embedding_client.aembed_documents([query]))[0]
+        capability_embeddings = await self._capability_embeddings()
+        scored = [
+            RelevantEffectCapability(
+                capability=capability,
+                score=_cosine_similarity(query_embedding, capability_embedding),
+            )
+            for capability, capability_embedding in zip(self.capabilities, capability_embeddings, strict=True)
+        ]
         return sorted(scored, key=lambda item: item.score, reverse=True)[:5]
+
+    async def _capability_embeddings(self) -> list[list[float]]:
+        cache_key = tuple(_capability_embedding_text(capability) for capability in self.capabilities)
+        if self._capability_embedding_cache and self._capability_embedding_cache[0] == cache_key:
+            return self._capability_embedding_cache[1]
+
+        embeddings = await self.embedding_client.aembed_documents(list(cache_key))
+        self._capability_embedding_cache = (cache_key, embeddings)
+        return embeddings
 
     @staticmethod
     def _validate_effect_operations(
@@ -274,16 +306,31 @@ def _with_additional_warnings(
     return result.model_copy(update={"warnings": warnings})
 
 
-def _keyword_score(query: str, haystack: str) -> float:
-    terms = {term for term in re_split_words(query) if len(term) > 2}
-    if not terms:
+def _capability_embedding_text(capability: EffectCapability) -> str:
+    return "\n".join(
+        [
+            f"Operation: {capability.operation}",
+            f"Description: {capability.description}",
+            f"Retrieval text: {capability.retrievalText}",
+            f"Examples: {'; '.join(capability.examples)}",
+            "Parameters: "
+            + "; ".join(
+                f"{parameter.name} ({parameter.valueType}): {parameter.description}"
+                for parameter in capability.parameters
+            ),
+        ]
+    )
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
         return 0
-    matches = sum(1 for term in terms if term in haystack)
-    return matches / len(terms)
-
-
-def re_split_words(text: str) -> list[str]:
-    return [part for part in "".join(char if char.isalnum() else " " for char in text.lower()).split() if part]
+    dot = sum(left_value * right_value for left_value, right_value in zip(left, right, strict=True))
+    left_norm = sqrt(sum(value * value for value in left))
+    right_norm = sqrt(sum(value * value for value in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0
+    return dot / (left_norm * right_norm)
 
 
 def _editor_context(context: IntentCompilerContext) -> dict[str, Any]:

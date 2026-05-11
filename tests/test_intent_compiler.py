@@ -6,9 +6,15 @@ from fastapi.testclient import TestClient
 import main
 from app.services.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
 from app.services.intent_compiler.compiler import IntentCompiler
-from app.services.intent_compiler.llm import IntentCompilerService, IntentLLMCompiler
+from app.services.intent_compiler.llm import (
+    IntentCompilerService,
+    IntentLLMCompiler,
+    _capability_embedding_text,
+)
 from app.services.intent_compiler.models import (
     CompileSource,
+    EffectCapability,
+    EffectCapabilityParameter,
     ExperimentalEffectOperation,
     ExperimentalEffectPlan,
     IntentCompileResult,
@@ -93,6 +99,102 @@ def test_effect_parameters_are_clamped_to_capability_schema():
     assert valid[0].parameters["amount"] == 1
 
 
+def test_relevant_effect_capabilities_are_ranked_by_embedding_similarity():
+    warm_capability = _test_capability("setTemperature", "warm cool temperature golden hour")
+    grain_capability = _test_capability("addGrain", "grain analog noise texture")
+    saturation_capability = _test_capability("setSaturation", "saturation vibrant color intensity")
+    effect_request = SemanticEffectRequest(sourceText="make it feel warmer", intent="warmth")
+    query = "make it feel warmer warmth"
+    embedding_client = _FakeEmbeddingClient(
+        {
+            query: [1.0, 0.0],
+            _capability_embedding_text(warm_capability): [0.95, 0.05],
+            _capability_embedding_text(grain_capability): [0.0, 1.0],
+            _capability_embedding_text(saturation_capability): [0.5, 0.5],
+        }
+    )
+    service = IntentCompilerService(
+        llm_compiler=object(),
+        capabilities=[grain_capability, saturation_capability, warm_capability],
+        embedding_client=embedding_client,
+    )
+
+    relevant = asyncio.run(service._relevant_capabilities(effect_request))
+
+    assert [item.capability.operation for item in relevant] == [
+        "setTemperature",
+        "setSaturation",
+        "addGrain",
+    ]
+    assert relevant[0].score > relevant[1].score > relevant[2].score
+
+
+def test_effect_capability_embeddings_are_cached_per_service_instance():
+    warm_capability = _test_capability("setTemperature", "warm cool temperature golden hour")
+    grain_capability = _test_capability("addGrain", "grain analog noise texture")
+    first_query = "make it feel warmer warmth"
+    second_query = "add some film texture texture"
+    capability_texts = [
+        _capability_embedding_text(warm_capability),
+        _capability_embedding_text(grain_capability),
+    ]
+    embedding_client = _FakeEmbeddingClient(
+        {
+            first_query: [1.0, 0.0],
+            second_query: [0.0, 1.0],
+            capability_texts[0]: [1.0, 0.0],
+            capability_texts[1]: [0.0, 1.0],
+        }
+    )
+    service = IntentCompilerService(
+        llm_compiler=object(),
+        capabilities=[warm_capability, grain_capability],
+        embedding_client=embedding_client,
+    )
+
+    asyncio.run(
+        service._relevant_capabilities(
+            SemanticEffectRequest(sourceText="make it feel warmer", intent="warmth")
+        )
+    )
+    asyncio.run(
+        service._relevant_capabilities(
+            SemanticEffectRequest(sourceText="add some film texture", intent="texture")
+        )
+    )
+
+    assert embedding_client.requests.count(capability_texts) == 1
+
+
+def test_compile_prompt_reports_embedding_unavailable_when_effect_retrieval_fails():
+    class FakeLLMCompiler:
+        async def make_semantic_plan(self, _prompt, _context):
+            return SemanticEditPlan(
+                effectRequests=[
+                    SemanticEffectRequest(sourceText="make this clip feel dreamy", intent="dreamy")
+                ]
+            )
+
+        async def plan_experimental_effects(self, **_kwargs):
+            raise AssertionError("Effect planning should not run without retrieved capabilities")
+
+    class FailingEmbeddingClient:
+        async def aembed_documents(self, _texts):
+            raise RuntimeError("embedding service unavailable")
+
+    context = IntentCompilerContext.model_validate(_sample_context())
+    service = IntentCompilerService(
+        llm_compiler=FakeLLMCompiler(),
+        embedding_client=FailingEmbeddingClient(),
+    )
+
+    result = asyncio.run(service.compile_prompt(prompt="make this clip feel dreamy", context=context))
+
+    assert result.actions == []
+    assert IntentCompileWarning.embeddingUnavailable in result.warnings
+    assert IntentCompileWarning.noActionProduced in result.warnings
+
+
 def test_intent_llm_compiler_uses_function_calling_for_planner_schemas():
     class FakeStructuredLLM:
         def __init__(self, result):
@@ -170,6 +272,34 @@ def test_text_intent_run_streams_final_result(monkeypatch):
                 assert final["result"]["actions"] == []
     finally:
         main.app.router.lifespan_context = original_lifespan
+
+
+class _FakeEmbeddingClient:
+    def __init__(self, embeddings_by_text):
+        self.embeddings_by_text = embeddings_by_text
+        self.requests = []
+
+    async def aembed_documents(self, texts):
+        self.requests.append(texts)
+        return [self.embeddings_by_text[text] for text in texts]
+
+
+def _test_capability(operation: str, retrieval_text: str) -> EffectCapability:
+    return EffectCapability(
+        operation=operation,
+        description=retrieval_text,
+        parameters=[
+            EffectCapabilityParameter(
+                name="value",
+                valueType="number",
+                minimum=-1,
+                maximum=1,
+                description="Test value.",
+            )
+        ],
+        retrievalText=retrieval_text,
+        examples=[retrieval_text],
+    )
 
 
 def test_voice_intent_websocket_delegates_after_start(monkeypatch):
