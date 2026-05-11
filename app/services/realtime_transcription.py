@@ -24,11 +24,12 @@ OPENAI_BETA = "realtime=v1"
 
 ALLOWED_TRANSCRIBE_MODELS: frozenset[str] = frozenset(
     {
+        "gpt-whisper-realtime",
         "gpt-4o-mini-transcribe",
         "gpt-4o-transcribe",
     }
 )
-DEFAULT_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
+DEFAULT_TRANSCRIBE_MODEL = "gpt-whisper-realtime"
 
 
 def _outbound_ssl_context() -> ssl.SSLContext:

@@ -18,6 +18,7 @@ from app.services.intent_compiler.models import (
     SemanticEffectRequest,
     SemanticEditPlan,
 )
+from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
 
 
 @asynccontextmanager
@@ -174,6 +175,7 @@ def test_text_intent_run_streams_final_result(monkeypatch):
 def test_voice_intent_websocket_delegates_after_start(monkeypatch):
     async def fake_stream_voice_intent(websocket, *, context, transcription_model):
         assert context.timelineId == "timeline-test"
+        assert transcription_model == DEFAULT_TRANSCRIBE_MODEL
         await websocket.send_json(
             {
                 "type": "intent_result",
