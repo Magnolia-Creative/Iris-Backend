@@ -15,7 +15,6 @@ from app.intent_compiler.llm import IntentCompilerService
 from app.intent_compiler.models import IntentCompilerContext
 from app.services.realtime_transcription import (
     DEFAULT_TRANSCRIBE_MODEL,
-    OPENAI_BETA,
     OPENAI_REALTIME_URL,
     _outbound_ssl_context,
     _transcription_session_update_event,
@@ -43,7 +42,6 @@ async def stream_voice_intent(
             OPENAI_REALTIME_URL,
             additional_headers=[
                 ("Authorization", f"Bearer {settings.openai_api_key}"),
-                ("OpenAI-Beta", OPENAI_BETA),
             ],
             open_timeout=30.0,
             max_size=16_777_216,

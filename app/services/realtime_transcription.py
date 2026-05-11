@@ -1,4 +1,4 @@
-"""WebSocket proxy for OpenAI Realtime API transcription (intent=transcription)."""
+"""WebSocket proxy for OpenAI Realtime API transcription sessions."""
 
 from __future__ import annotations
 
@@ -19,17 +19,16 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
-OPENAI_BETA = "realtime=v1"
+OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
 
 ALLOWED_TRANSCRIBE_MODELS: frozenset[str] = frozenset(
     {
-        "gpt-whisper-realtime",
+        "gpt-realtime-whisper",
         "gpt-4o-mini-transcribe",
         "gpt-4o-transcribe",
     }
 )
-DEFAULT_TRANSCRIBE_MODEL = "gpt-whisper-realtime"
+DEFAULT_TRANSCRIBE_MODEL = "gpt-realtime-whisper"
 
 
 def _outbound_ssl_context() -> ssl.SSLContext:
@@ -48,22 +47,30 @@ def _outbound_ssl_context() -> ssl.SSLContext:
 
 def _transcription_session_update_event(*, model: str) -> dict[str, Any]:
     """
-    `transcription_session.update` for `wss://.../realtime?intent=transcription`.
-    See TranscriptionSessionUpdate in the Realtime client-events reference: use flat
-    `input_audio_format` / `input_audio_transcription` / `turn_detection` — not
-    `session.update` with `session.type` (rejected with unknown_parameter).
+    GA Realtime transcription sessions use `session.update` with nested audio config.
+    The audio capture clients send 24 kHz mono PCM16 chunks as base64.
     """
     return {
-        "type": "transcription_session.update",
+        "type": "session.update",
         "session": {
-            "input_audio_format": "pcm16",
-            "input_audio_noise_reduction": {"type": "near_field"},
-            "input_audio_transcription": {"model": model},
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
+            "type": "transcription",
+            "audio": {
+                "input": {
+                    "format": {
+                        "type": "audio/pcm",
+                        "rate": 24000,
+                    },
+                    "transcription": {
+                        "model": model,
+                        "language": "en",
+                    },
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                    },
+                },
             },
         },
     }
@@ -170,7 +177,6 @@ async def stream_transcription(
 
     additional_headers: list[tuple[str, str]] = [
         ("Authorization", f"Bearer {settings.openai_api_key}"),
-        ("OpenAI-Beta", OPENAI_BETA),
     ]
 
     oai: Any
