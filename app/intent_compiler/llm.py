@@ -20,6 +20,7 @@ from app.intent_compiler.models import (
     IntentCompileWarning,
     IntentCompilerContext,
     IntentEditType,
+    JSONValue,
     RelevantEffectCapability,
     SemanticClipReference,
     SemanticEffectRequest,
