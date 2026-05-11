@@ -21,6 +21,7 @@ class Settings:
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.intent_openai_model = os.getenv("INTENT_OPENAI_MODEL", "gpt-5.4-nano")
         self.transcript_cache_ttl_seconds = int(
             os.getenv("TRANSCRIPT_CACHE_TTL_SECONDS", "3600")
         )
