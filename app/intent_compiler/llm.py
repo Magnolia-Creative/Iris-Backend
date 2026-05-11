@@ -461,7 +461,7 @@ def _inferred_effect_parameter_value(
     minimum = parameter.minimum if parameter.minimum is not None else -1
     maximum = parameter.maximum if parameter.maximum is not None else 1
     source = operation.sourceText.lower()
-    intensity = _effect_intensity(source)
+    intensity = _effect_intensity(operation.operation, source)
 
     if minimum >= 0:
         return min(max(intensity, minimum), maximum)
@@ -472,12 +472,45 @@ def _inferred_effect_parameter_value(
     return min(max(direction * intensity, minimum), maximum)
 
 
-def _effect_intensity(source: str) -> float:
+def _effect_intensity(operation: str, source: str) -> float:
+    base_by_operation = {
+        "addGrain": 0.18,
+        "setTemperature": 0.4,
+        "setSaturation": 0.18,
+        "setContrast": 0.28,
+        "setExposure": 0.16,
+        "setHighlights": 0.2,
+        "setShadows": 0.22,
+    }
+    value = base_by_operation.get(operation, 0.25)
+
+    if "cinematic" in source:
+        cinematic_values = {
+            "addGrain": 0.12,
+            "setTemperature": 0.35,
+            "setSaturation": 0.12,
+            "setContrast": 0.32,
+            "setExposure": 0.1,
+            "setHighlights": 0.18,
+            "setShadows": 0.28,
+        }
+        value = cinematic_values.get(operation, value)
+    if any(term in source for term in ["vintage", "film", "analog", "2016", "la vibe"]):
+        vintage_values = {
+            "addGrain": 0.22,
+            "setTemperature": 0.3,
+            "setSaturation": 0.16,
+            "setContrast": 0.22,
+            "setExposure": 0.08,
+            "setHighlights": 0.16,
+            "setShadows": 0.2,
+        }
+        value = vintage_values.get(operation, value)
     if any(term in source for term in ["extreme", "super", "very", "really", "heavy", "strong", "intense"]):
-        return 0.7
+        return min(value * 1.75, 0.8)
     if any(term in source for term in ["slight", "subtle", "little", "soft", "gentle"]):
-        return 0.2
-    return 0.35
+        return min(value, 0.18)
+    return value
 
 
 def _effect_direction(operation: str, source: str) -> int:

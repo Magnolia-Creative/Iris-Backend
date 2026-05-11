@@ -292,9 +292,11 @@ class IntentCompiler:
         clip = self._resolve_clip(operation.target, context, simulator, previous_clip_id)
         if clip is None:
             return self._needs(IntentCompileWarning.missingSelectedClip, "Which clip do you want to trim?")
-        edge = str(operation.parameters.get("edge") or "").lower()
+        edge = str(operation.parameters.get("edge") or "").lower() or self._infer_trim_edge(operation.sourceText)
         amount = self._duration_expression(operation.parameters.get("amount"))
         duration_us = self._resolve_duration_us(amount, clip, operation.sourceText) if amount else None
+        if duration_us is None:
+            duration_us = self._explicit_duration_us(operation.sourceText)
         if duration_us is None or duration_us <= 0 or duration_us >= clip.timelineRange.duration:
             return self._needs(IntentCompileWarning.invalidTrimRange, "How much do you want to trim?")
         if edge in {"start", "beginning"}:
@@ -627,6 +629,8 @@ class IntentCompiler:
             return explicit if explicit is not None else self._microseconds(expression.value, expression.unit)
         if expression.kind == "percentage" and expression.value is not None:
             return round(clip.timelineRange.duration * expression.value / 100)
+        if expression.kind == "vague":
+            return self._explicit_duration_us(source_text)
         return None
 
     def _resolve_time_us(
@@ -651,21 +655,34 @@ class IntentCompiler:
             return clip.timelineRange.end - duration if duration is not None else None
         return None
 
-    def _explicit_duration_us(self, text: str | None, expected_value: float) -> int | None:
+    def _explicit_duration_us(self, text: str | None, expected_value: float | None = None) -> int | None:
         if not text:
             return None
         pattern = re.compile(
-            r"\b(\d+(?:\.\d+)?)\s*(microseconds?|usec|us|milliseconds?|msec|ms|seconds?|secs?|sec|s|minutes?|mins?|min|m)\b",
+            r"\b(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*"
+            r"(microseconds?|usec|us|milliseconds?|msec|ms|seconds?|secs?|sec|s|minutes?|mins?|min|m)\b",
             re.IGNORECASE,
         )
         for match in pattern.finditer(text):
-            value = float(match.group(1))
-            if abs(value - expected_value) > 0.000_001:
+            numeric_value = _float_value(match.group(1))
+            value = numeric_value if numeric_value is not None else _spoken_number_value(match.group(1))
+            if value is None:
+                continue
+            if expected_value is not None and abs(value - expected_value) > 0.000_001:
                 continue
             unit = self._unit(match.group(2))
             if unit:
                 return self._microseconds(value, unit)
         return None
+
+    @staticmethod
+    def _infer_trim_edge(source_text: str | None) -> str:
+        text = (source_text or "").lower()
+        if re.search(r"\b(first|start|beginning|front|opening)\b", text):
+            return "start"
+        if re.search(r"\b(last|end|ending|tail|final)\b", text):
+            return "end"
+        return ""
 
     @staticmethod
     def _unit(raw: str) -> DurationUnit | None:
@@ -699,6 +716,26 @@ def _float_value(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _spoken_number_value(value: str) -> float | None:
+    numbers = {
+        "a": 1,
+        "an": 1,
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+    }
+    return numbers.get(value.lower())
 
 
 def _swift_reference_date_seconds() -> float:

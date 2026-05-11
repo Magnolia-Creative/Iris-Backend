@@ -122,6 +122,67 @@ def test_missing_effect_parameters_are_inferred_with_value_notes():
     assert valid[0].parameterNotes["value"] == "Makes temperature cooler."
 
 
+def test_missing_effect_parameters_use_operation_specific_values():
+    capabilities = [
+        capability
+        for capability in DEFAULT_EFFECT_CAPABILITIES
+        if capability.operation in {"setTemperature", "setContrast", "setSaturation"}
+    ]
+    operations = [
+        ExperimentalEffectOperation(
+            operation=capability.operation,
+            sourceText="give it a warm cinematic look",
+            target={"type": "selectedClip"},
+            confidence=0.75,
+            parameters={},
+        )
+        for capability in capabilities
+    ]
+
+    valid, warnings = IntentCompilerService._validate_effect_operations(
+        operations,
+        [RelevantEffectCapability(capability=capability, score=1.0) for capability in capabilities],
+    )
+
+    values = {operation.operation: operation.parameters["value"] for operation in valid}
+    assert warnings == []
+    assert values == {
+        "setTemperature": 0.35,
+        "setSaturation": 0.12,
+        "setContrast": 0.32,
+    }
+
+
+def test_trim_infers_spoken_seconds_from_source_text():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.trimClip,
+                sourceText="Trim the first part of the video by two seconds",
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+        needsClarification=False,
+        clarificationQuestion=None,
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="Trim the first part of the video by two seconds",
+        context=context,
+    )
+
+    assert result.needsClarification is False
+    assert result.warnings == []
+    assert len(result.actions) == 1
+    trim_payload = result.actions[0].payload["trimClip"]
+    assert trim_payload["sourceRange"] == {"start": 2_000_000, "end": 10_000_000}
+    assert trim_payload["timelineRange"] == {"start": 7_000_000, "end": 15_000_000}
+
+
 def test_relevant_effect_capabilities_are_ranked_by_embedding_similarity():
     warm_capability = _test_capability("setTemperature", "warm cool temperature golden hour")
     grain_capability = _test_capability("addGrain", "grain analog noise texture")
