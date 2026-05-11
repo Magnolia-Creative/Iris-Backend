@@ -220,7 +220,6 @@ def test_trim_infers_spoken_seconds_from_source_text():
     assert len(result.actions) == 1
     trim_payload = result.actions[0].payload["trimClip"]
     assert trim_payload["sourceRange"] == {"start": 2_000_000, "end": 10_000_000}
-    assert trim_payload["timelineRange"] == {"start": 7_000_000, "end": 15_000_000}
 
 
 def test_relevant_effect_capabilities_are_ranked_by_embedding_similarity():

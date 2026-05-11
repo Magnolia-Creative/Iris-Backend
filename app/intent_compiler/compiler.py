@@ -97,7 +97,6 @@ class IntentTimelineSimulator:
             self._apply_trim(
                 operation.targetClipId,
                 TimeRange.model_validate(params["sourceRange"]),
-                TimeRange.model_validate(params["timelineRange"]),
             )
         elif operation.type == IntentEditType.moveClip and operation.targetClipId:
             clip = self.clip(operation.targetClipId)
@@ -144,13 +143,32 @@ class IntentTimelineSimulator:
             candidate for candidate in self.ordered_clip_ids(clip.trackId) if candidate != clip_id
         ]
 
-    def _apply_trim(self, clip_id: str, source_range: TimeRange, timeline_range: TimeRange) -> None:
+    def _apply_trim(self, clip_id: str, source_range: TimeRange) -> None:
         clip = self.clip(clip_id)
-        if clip is None:
+        if clip is None or source_range.duration <= 0:
             return
         self.clips_by_id[clip_id] = clip.model_copy(
-            update={"sourceRange": source_range, "timelineRange": timeline_range}
+            update={
+                "sourceRange": source_range,
+                "timelineRange": TimeRange(
+                    start=clip.timelineRange.start,
+                    end=clip.timelineRange.start + source_range.duration,
+                ),
+            }
         )
+        self._pack_track(clip.trackId)
+
+    def _pack_track(self, track_id: str) -> None:
+        cursor = 0
+        for clip_id in self.ordered_clip_ids(track_id):
+            clip = self.clip(clip_id)
+            if clip is None:
+                continue
+            duration = clip.timelineRange.duration
+            self.clips_by_id[clip_id] = clip.model_copy(
+                update={"timelineRange": TimeRange(start=cursor, end=cursor + duration)}
+            )
+            cursor += duration
 
 
 class IntentCompiler:
@@ -301,16 +319,14 @@ class IntentCompiler:
             return self._needs(IntentCompileWarning.invalidTrimRange, "How much do you want to trim?")
         if edge in {"start", "beginning"}:
             source_range = TimeRange(start=clip.sourceRange.start + duration_us, end=clip.sourceRange.end)
-            timeline_range = TimeRange(start=clip.timelineRange.start + duration_us, end=clip.timelineRange.end)
         elif edge in {"end", "final"}:
             source_range = TimeRange(start=clip.sourceRange.start, end=clip.sourceRange.end - duration_us)
-            timeline_range = TimeRange(start=clip.timelineRange.start, end=clip.timelineRange.end - duration_us)
         else:
             return self._needs(IntentCompileWarning.invalidTrimRange, "Should I trim the start or end of the clip?")
         return self._success(
             operation,
             clip_id=clip.clipId,
-            parameters={"sourceRange": source_range.model_dump(), "timelineRange": timeline_range.model_dump()},
+            parameters={"sourceRange": source_range.model_dump()},
         )
 
     def _resolve_move(
@@ -450,7 +466,6 @@ class IntentCompiler:
                     "trimClip": {
                         "clipId": operation.targetClipId,
                         "sourceRange": operation.parameters["sourceRange"],
-                        "timelineRange": operation.parameters["timelineRange"],
                     }
                 },
             )
@@ -520,8 +535,7 @@ class IntentCompiler:
             if context.clip(body.get("clipId")) is None:
                 return [IntentCompileWarning.clipNotFound]
             source = TimeRange.model_validate(body.get("sourceRange"))
-            timeline = TimeRange.model_validate(body.get("timelineRange"))
-            if source.duration <= 0 or timeline.duration <= 0 or source.duration != timeline.duration:
+            if source.duration <= 0:
                 return [IntentCompileWarning.invalidTrimRange]
         if "moveClip" in payload:
             body = payload["moveClip"]
