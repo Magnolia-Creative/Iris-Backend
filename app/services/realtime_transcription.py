@@ -19,7 +19,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 
 ALLOWED_TRANSCRIBE_MODELS: frozenset[str] = frozenset(
     {
@@ -48,6 +48,7 @@ def _outbound_ssl_context() -> ssl.SSLContext:
 def _transcription_session_update_event(*, model: str) -> dict[str, Any]:
     """
     GA Realtime transcription sessions use `session.update` with nested audio config.
+    The `intent=transcription` URL creates a transcription session before this update.
     The audio capture clients send 24 kHz mono PCM16 chunks as base64.
     """
     return {
@@ -63,12 +64,6 @@ def _transcription_session_update_event(*, model: str) -> dict[str, Any]:
                     "transcription": {
                         "model": model,
                         "language": "en",
-                    },
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
                     },
                 },
             },

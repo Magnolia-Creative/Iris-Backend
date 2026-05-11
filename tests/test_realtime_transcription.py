@@ -6,7 +6,7 @@ from app.services.realtime_transcription import (
 
 
 def test_openai_realtime_url_uses_ga_endpoint() -> None:
-    assert OPENAI_REALTIME_URL == "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+    assert OPENAI_REALTIME_URL == "wss://api.openai.com/v1/realtime?intent=transcription"
 
 
 def test_transcription_session_update_uses_ga_shape() -> None:
@@ -25,12 +25,6 @@ def test_transcription_session_update_uses_ga_shape() -> None:
                     "transcription": {
                         "model": "gpt-realtime-whisper",
                         "language": "en",
-                    },
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
                     },
                 },
             },
