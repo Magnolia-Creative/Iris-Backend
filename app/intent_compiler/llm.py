@@ -83,7 +83,7 @@ class IntentLLMCompiler:
                     "system",
                     "You convert one abstract visual style request into conservative effect operations. "
                     "Use only retrieved capability operation names and parameter schemas. "
-                    "Every operation must include concrete parameter values and notes explaining those values.",
+                    "Every operation must include concrete parameter values, an intention, and notes explaining those values.",
                 ),
                 (
                     "human",
@@ -110,6 +110,9 @@ class IntentLLMCompiler:
             "- Use target objects only, never plain target strings. Use only ids in ctx.\n"
             "- If ctx.selectedClipId is non-null, treat targetless clip edits and phrases like "
             "'this clip', 'the clip', 'selected clip', 'current clip', and 'it' as {\"type\":\"selectedClip\"}.\n"
+            "- Prioritize ctx.selectedClipId for clip edits unless the user explicitly names another clip. "
+            "Phrases like 'first two seconds', 'first part', or 'beginning' describe the selected clip's trim edge, "
+            "not the first clip on the timeline.\n"
             "- If no clip is selected but ctx.currentClipAtPlayheadId is non-null, use "
             "{\"type\":\"currentClipAtPlayhead\"} for targetless clip edits.\n"
             "- For 'split in half', 'split down the middle', or similar, use "
@@ -149,8 +152,11 @@ class IntentLLMCompiler:
             "- Use conservative numeric values unless the prompt asks for an extreme look.\n"
             "- Parameters must stay within min/max ranges.\n"
             "- Every selected operation must include a concrete value for each capability parameter.\n"
+            "- Every selected operation must include intention: a short lower-case imperative describing that "
+            "operation's visual goal, such as \"make it warmer\" for positive setTemperature.\n"
             "- Add parameterNotes with one short note per parameter explaining what that chosen value does.\n"
-            '- Example: parameters={"value":-0.25}, parameterNotes={"value":"Makes temperature cooler."}.\n'
+            '- Example: intention="make it cooler", parameters={"value":-0.25}, '
+            'parameterNotes={"value":"Makes temperature cooler."}.\n'
             "- If no capability is useful, return operations=[] with rationale.\n"
             f"originalUserPrompt={original_prompt}\n"
             f"effectRequest={effect_request.model_dump_json()}\n"
@@ -320,7 +326,15 @@ class IntentCompilerService:
                     float(params[parameter.name]),
                     parameter.description,
                 )
-            valid.append(operation.model_copy(update={"parameters": params, "parameterNotes": parameter_notes}))
+            valid.append(
+                operation.model_copy(
+                    update={
+                        "intention": _effect_operation_intention(operation, params),
+                        "parameters": params,
+                        "parameterNotes": parameter_notes,
+                    }
+                )
+            )
         return valid, warnings
 
 
@@ -336,6 +350,12 @@ _HALF_TERMS = re.compile(r"\b(half|middle|midpoint|center|centre)\b", re.IGNOREC
 _REMOVE_TERMS = re.compile(r"\b(delete|remove)\b", re.IGNORECASE)
 _SELECTED_REFERENCE_TERMS = re.compile(r"\b(this|that|the|selected|current|clip|it)\b", re.IGNORECASE)
 _BROAD_TARGET_TERMS = re.compile(r"\b(all|every|everything|entire timeline)\b", re.IGNORECASE)
+_EXPLICIT_NON_SELECTED_CLIP_TERMS = re.compile(
+    r"\b(first|second|third|last)\s+(clip|video|shot)\b"
+    r"|\bclip[\s-]+[a-z0-9]+\b"
+    r"|\b(at|under)\s+(the\s+)?playhead\b",
+    re.IGNORECASE,
+)
 
 
 def _apply_contextual_assumptions(
@@ -383,7 +403,16 @@ def _assume_operation_target(
     operation: SemanticEditOperation,
     target: SemanticClipReference,
 ) -> SemanticEditOperation:
-    if operation.type not in _CLIP_EDIT_TYPES or operation.target is not None:
+    if operation.type not in _CLIP_EDIT_TYPES:
+        return operation
+    if operation.target is not None:
+        if _should_prefer_selected_clip_target(operation):
+            return operation.model_copy(
+                update={
+                    "target": target,
+                    "confidence": max(float(operation.confidence or 0), 0.85),
+                }
+            )
         return operation
     return operation.model_copy(
         update={
@@ -391,6 +420,14 @@ def _assume_operation_target(
             "confidence": max(float(operation.confidence or 0), 0.85),
         }
     )
+
+
+def _should_prefer_selected_clip_target(operation: SemanticEditOperation) -> bool:
+    if not isinstance(operation.target, SemanticClipReference):
+        return False
+    if operation.target.type == "selectedClip":
+        return False
+    return _EXPLICIT_NON_SELECTED_CLIP_TERMS.search(operation.sourceText) is None
 
 
 def _assume_effect_operation_targets(
@@ -570,6 +607,53 @@ def _effect_parameter_note(
     if operation == "setShadows" and parameter_name == "value":
         return _signed_note(value, "Deepens shadows.", "Lifts shadows.")
     return description.rstrip(".") + "."
+
+
+def _effect_operation_intention(
+    operation: ExperimentalEffectOperation,
+    parameters: dict[str, JSONValue],
+) -> str:
+    existing = (operation.intention or "").strip()
+    if existing:
+        return existing
+
+    if operation.operation == "addGrain":
+        amount = _numeric_effect_parameter(parameters, "amount")
+        return "add film grain" if amount is None or amount > 0 else "keep film grain unchanged"
+
+    value = _numeric_effect_parameter(parameters, "value")
+    if operation.operation == "setTemperature":
+        return _signed_intention(value, "make it cooler", "make it warmer", "keep temperature unchanged")
+    if operation.operation == "setSaturation":
+        return _signed_intention(value, "make it more faded", "boost color saturation", "keep saturation unchanged")
+    if operation.operation == "setContrast":
+        return _signed_intention(value, "soften contrast", "add contrast", "keep contrast unchanged")
+    if operation.operation == "setExposure":
+        return _signed_intention(value, "darken the clip", "brighten the clip", "keep exposure unchanged")
+    if operation.operation == "setHighlights":
+        return _signed_intention(value, "recover highlights", "lift highlights", "keep highlights unchanged")
+    if operation.operation == "setShadows":
+        return _signed_intention(value, "deepen shadows", "lift shadows", "keep shadows unchanged")
+
+    return operation.sourceText
+
+
+def _numeric_effect_parameter(parameters: dict[str, JSONValue], name: str) -> float | None:
+    value = parameters.get(name)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _signed_intention(value: float | None, negative: str, positive: str, neutral: str) -> str:
+    if value is None:
+        return positive
+    if value < 0:
+        return negative
+    if value > 0:
+        return positive
+    return neutral
 
 
 def _signed_note(value: float, negative_note: str, positive_note: str) -> str:

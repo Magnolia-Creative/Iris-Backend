@@ -167,6 +167,10 @@ class RelevantEffectCapability(IntentCompilerBaseModel):
 class ExperimentalEffectOperation(IntentCompilerBaseModel):
     operation: str
     sourceText: str
+    intention: str | None = Field(
+        default=None,
+        description="Short imperative phrase describing the visual goal of this edit.",
+    )
     target: SemanticEditTarget | None = None
     confidence: float
     parameters: dict[str, JSONValue] = Field(default_factory=dict)

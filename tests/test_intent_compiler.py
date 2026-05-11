@@ -119,6 +119,7 @@ def test_missing_effect_parameters_are_inferred_with_value_notes():
 
     assert warnings == []
     assert valid[0].parameters["value"] < 0
+    assert valid[0].intention == "make it cooler"
     assert valid[0].parameterNotes["value"] == "Makes temperature cooler."
 
 
@@ -150,6 +151,11 @@ def test_missing_effect_parameters_use_operation_specific_values():
         "setTemperature": 0.35,
         "setSaturation": 0.12,
         "setContrast": 0.32,
+    }
+    assert {operation.operation: operation.intention for operation in valid} == {
+        "setTemperature": "make it warmer",
+        "setSaturation": "boost color saturation",
+        "setContrast": "add contrast",
     }
 
 
@@ -336,6 +342,76 @@ def test_compile_prompt_assumes_selected_clip_for_targetless_operation():
     assert result.confidence == 0.85
     assert result.actions[0].payload["splitClip"] == {"clipId": "clip-b", "atTimeUs": 10_000_000}
     assert IntentCompileWarning.ambiguousTarget not in result.warnings
+
+
+def test_compile_prompt_prioritizes_selected_clip_for_ambiguous_first_duration():
+    class FakeLLMCompiler:
+        async def make_semantic_plan(self, _prompt, _context):
+            return SemanticEditPlan(
+                operations=[
+                    SemanticEditOperation(
+                        type=IntentEditType.trimClip,
+                        sourceText="Trim the first two seconds of the clip.",
+                        target={
+                            "type": "ordinal",
+                            "value": "first",
+                            "track": {"type": "selectedTrack"},
+                        },
+                        parameters={"edge": "start", "amount": {"type": "duration", "value": 2, "unit": "second"}},
+                        confidence=0.8,
+                    )
+                ],
+                needsClarification=False,
+            )
+
+        async def plan_experimental_effects(self, **_kwargs):
+            raise AssertionError("Effect planning should not run for a trim operation")
+
+    context = IntentCompilerContext.model_validate(_sample_context())
+    service = IntentCompilerService(
+        llm_compiler=FakeLLMCompiler(),
+        embedding_client=object(),
+    )
+
+    result = asyncio.run(service.compile_prompt(prompt="Trim the first two seconds of the clip.", context=context))
+
+    assert result.needsClarification is False
+    assert result.actions[0].payload["trimClip"]["clipId"] == "clip-b"
+
+
+def test_compile_prompt_preserves_explicit_first_clip_target():
+    class FakeLLMCompiler:
+        async def make_semantic_plan(self, _prompt, _context):
+            return SemanticEditPlan(
+                operations=[
+                    SemanticEditOperation(
+                        type=IntentEditType.trimClip,
+                        sourceText="Trim the first clip by two seconds.",
+                        target={
+                            "type": "ordinal",
+                            "value": "first",
+                            "track": {"type": "selectedTrack"},
+                        },
+                        parameters={"edge": "start", "amount": {"type": "duration", "value": 2, "unit": "second"}},
+                        confidence=0.8,
+                    )
+                ],
+                needsClarification=False,
+            )
+
+        async def plan_experimental_effects(self, **_kwargs):
+            raise AssertionError("Effect planning should not run for a trim operation")
+
+    context = IntentCompilerContext.model_validate(_sample_context())
+    service = IntentCompilerService(
+        llm_compiler=FakeLLMCompiler(),
+        embedding_client=object(),
+    )
+
+    result = asyncio.run(service.compile_prompt(prompt="Trim the first clip by two seconds.", context=context))
+
+    assert result.needsClarification is False
+    assert result.actions[0].payload["trimClip"]["clipId"] == "clip-a"
 
 
 def test_intent_llm_compiler_uses_function_calling_for_planner_schemas():
