@@ -15,6 +15,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -50,6 +51,10 @@ from app.services.realtime_transcription import (
     DEFAULT_TRANSCRIBE_MODEL,
     stream_transcription,
 )
+from app.services.intent_compiler.llm import IntentCompilerService
+from app.services.intent_compiler.models import IntentCompileRequest, IntentCompilerContext
+from app.services.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
+from app.services.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
 from app import models  # noqa: F401
@@ -97,6 +102,11 @@ class WebSocketSessionStartPayload(BaseModel):
 class WebSocketRepromptPayload(BaseModel):
     type: Literal["reprompt"]
     prompt: str
+
+
+class VoiceIntentStartPayload(BaseModel):
+    type: Literal["start"]
+    context: IntentCompilerContext
 
 
 def _is_timeline_approval_message(prompt: str) -> bool:
@@ -199,6 +209,20 @@ async def create_project_agent_session(
         session_name=payload.session_name,
         project_name=payload.project_name,
     )
+
+
+@app.post("/intent-runs")
+async def create_intent_run_endpoint(
+    payload: IntentCompileRequest,
+    request: Request,
+):
+    run = create_intent_run(prompt=payload.prompt, context=payload.context)
+    websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(
+        "http://",
+        "ws://",
+        1,
+    ).replace("https://", "wss://", 1)
+    return {"run_id": run.run_id, "websocket_url": websocket_url}
 
 
 @app.post("/projects/{project_id}/clips/process")
@@ -450,6 +474,60 @@ async def session_websocket(
         await websocket.close(code=1011)
 
 
+@app.websocket("/ws/intent-runs/{run_id}", name="intent_run_websocket")
+async def intent_run_websocket(
+    websocket: WebSocket,
+    run_id: str,
+) -> None:
+    await websocket.accept()
+    run = get_intent_run(run_id)
+    if run is None:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "run_id": run_id,
+                    "detail": f"Intent run {run_id} not found.",
+                }
+            )
+        )
+        await websocket.close(code=1008)
+        return
+
+    async def send_event(payload: dict[str, Any]) -> None:
+        await websocket.send_text(json.dumps({"run_id": run_id, **payload}))
+
+    try:
+        await send_event({"type": "run_started", "prompt": run.prompt})
+        service = IntentCompilerService()
+        result = await service.compile_prompt(
+            prompt=run.prompt,
+            context=run.context,
+            event_handler=send_event,
+        )
+        await send_event(
+            {
+                "type": "intent_result",
+                "prompt": run.prompt,
+                "result": json.loads(result.model_dump_json(by_alias=True)),
+            }
+        )
+        await websocket.close()
+    except WebSocketDisconnect:
+        logger.info("[intent-runs] Client disconnected run=%s", run_id)
+    except Exception:
+        logger.exception("[intent-runs] Intent run failed run=%s", run_id)
+        await send_event(
+            {
+                "type": "error",
+                "detail": "Intent run failed; check server logs for details.",
+            }
+        )
+        await websocket.close(code=1011)
+    finally:
+        delete_intent_run(run_id)
+
+
 @app.websocket("/ws/transcribe")
 async def transcribe_websocket(
     websocket: WebSocket,
@@ -469,3 +547,44 @@ async def transcribe_websocket(
         await websocket.close(code=1008)
         return
     await stream_transcription(websocket, model=model)
+
+
+@app.websocket("/ws/intent/voice")
+async def voice_intent_websocket(
+    websocket: WebSocket,
+    model: str = Query(default=DEFAULT_TRANSCRIBE_MODEL),
+) -> None:
+    await websocket.accept()
+    if model not in ALLOWED_TRANSCRIBE_MODELS:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "detail": f"Unsupported model: {model}. "
+                    f"Allowed: {', '.join(sorted(ALLOWED_TRANSCRIBE_MODELS))}",
+                }
+            )
+        )
+        await websocket.close(code=1008)
+        return
+    try:
+        raw_message = await websocket.receive_json()
+        start_payload = VoiceIntentStartPayload.model_validate(raw_message)
+    except ValidationError as exc:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "detail": "Invalid start payload. Use {'type':'start','context':...}.",
+                    "errors": exc.errors(),
+                }
+            )
+        )
+        await websocket.close(code=1003)
+        return
+
+    await stream_voice_intent(
+        websocket,
+        context=start_payload.context,
+        transcription_model=model,
+    )
