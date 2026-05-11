@@ -12,6 +12,7 @@ from app.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
 from app.intent_compiler.compiler import IntentCompiler
 from app.intent_compiler.models import (
     EffectCapability,
+    EffectCapabilityParameter,
     ExperimentalEffectOperation,
     ExperimentalEffectPlan,
     IntentCompileResult,
@@ -77,7 +78,8 @@ class IntentLLMCompiler:
                 (
                     "system",
                     "You convert one abstract visual style request into conservative effect operations. "
-                    "Use only retrieved capability operation names and parameter schemas.",
+                    "Use only retrieved capability operation names and parameter schemas. "
+                    "Every operation must include concrete parameter values and notes explaining those values.",
                 ),
                 (
                     "human",
@@ -134,6 +136,9 @@ class IntentLLMCompiler:
             "- Prefer a small combination of complementary effects over many weak effects.\n"
             "- Use conservative numeric values unless the prompt asks for an extreme look.\n"
             "- Parameters must stay within min/max ranges.\n"
+            "- Every selected operation must include a concrete value for each capability parameter.\n"
+            "- Add parameterNotes with one short note per parameter explaining what that chosen value does.\n"
+            '- Example: parameters={"value":-0.25}, parameterNotes={"value":"Makes temperature cooler."}.\n'
             "- If no capability is useful, return operations=[] with rationale.\n"
             f"originalUserPrompt={original_prompt}\n"
             f"effectRequest={effect_request.model_dump_json()}\n"
@@ -276,18 +281,126 @@ class IntentCompilerService:
                 warnings.append(IntentCompileWarning.unsupportedAction)
                 continue
             params = dict(operation.parameters)
+            parameter_notes = dict(operation.parameterNotes)
             for parameter in capability.parameters:
-                if parameter.valueType != "number" or parameter.name not in params:
+                if parameter.valueType != "number":
                     continue
+                if parameter.name not in params:
+                    inferred = _inferred_effect_parameter_value(operation, parameter)
+                    if inferred is None:
+                        continue
+                    params[parameter.name] = inferred
                 try:
                     value = float(params[parameter.name])
                 except (TypeError, ValueError):
-                    continue
+                    inferred = _inferred_effect_parameter_value(operation, parameter)
+                    if inferred is None:
+                        continue
+                    value = inferred
                 minimum = parameter.minimum if parameter.minimum is not None else value
                 maximum = parameter.maximum if parameter.maximum is not None else value
                 params[parameter.name] = min(max(value, minimum), maximum)
-            valid.append(operation.model_copy(update={"parameters": params}))
+                parameter_notes[parameter.name] = _effect_parameter_note(
+                    operation.operation,
+                    parameter.name,
+                    float(params[parameter.name]),
+                    parameter.description,
+                )
+            valid.append(operation.model_copy(update={"parameters": params, "parameterNotes": parameter_notes}))
         return valid, warnings
+
+
+def _inferred_effect_parameter_value(
+    operation: ExperimentalEffectOperation,
+    parameter: EffectCapabilityParameter,
+) -> float | None:
+    minimum = parameter.minimum if parameter.minimum is not None else -1
+    maximum = parameter.maximum if parameter.maximum is not None else 1
+    source = operation.sourceText.lower()
+    intensity = _effect_intensity(source)
+
+    if minimum >= 0:
+        return min(max(intensity, minimum), maximum)
+
+    direction = _effect_direction(operation.operation, source)
+    if direction == 0:
+        direction = _default_effect_direction(operation.operation)
+    return min(max(direction * intensity, minimum), maximum)
+
+
+def _effect_intensity(source: str) -> float:
+    if any(term in source for term in ["extreme", "super", "very", "really", "heavy", "strong", "intense"]):
+        return 0.7
+    if any(term in source for term in ["slight", "subtle", "little", "soft", "gentle"]):
+        return 0.2
+    return 0.35
+
+
+def _effect_direction(operation: str, source: str) -> int:
+    negative_terms_by_operation = {
+        "setTemperature": ["cool", "cold", "blue", "icy"],
+        "setSaturation": ["desaturat", "faded", "muted", "washed", "bleached"],
+        "setContrast": ["soft", "flat", "faded", "matte", "less harsh"],
+        "setExposure": ["dark", "dim", "underexposed", "moody"],
+        "setHighlights": ["recover", "blown", "soften"],
+        "setShadows": ["deepen", "crush", "dark"],
+    }
+    positive_terms_by_operation = {
+        "setTemperature": ["warm", "golden", "sunset", "orange", "la", "vintage"],
+        "setSaturation": ["saturat", "vibrant", "pop", "colorful", "rich"],
+        "setContrast": ["contrast", "punchy", "dramatic", "cinematic", "moody"],
+        "setExposure": ["bright", "airy", "light", "overexposed"],
+        "setHighlights": ["glow", "lift", "bright"],
+        "setShadows": ["lift", "faded", "matte"],
+    }
+    if any(term in source for term in negative_terms_by_operation.get(operation, [])):
+        return -1
+    if any(term in source for term in positive_terms_by_operation.get(operation, [])):
+        return 1
+    return 0
+
+
+def _default_effect_direction(operation: str) -> int:
+    defaults = {
+        "setTemperature": 1,
+        "setSaturation": 1,
+        "setContrast": 1,
+        "setExposure": 1,
+        "setHighlights": 1,
+        "setShadows": 1,
+    }
+    return defaults.get(operation, 1)
+
+
+def _effect_parameter_note(
+    operation: str,
+    parameter_name: str,
+    value: float,
+    description: str,
+) -> str:
+    if operation == "addGrain" and parameter_name == "amount":
+        return "Adds visible film grain." if value > 0 else "Leaves film grain unchanged."
+    if operation == "setTemperature" and parameter_name == "value":
+        return _signed_note(value, "Makes temperature cooler.", "Makes temperature warmer.")
+    if operation == "setSaturation" and parameter_name == "value":
+        return _signed_note(value, "Desaturates the clip.", "Increases color saturation.")
+    if operation == "setContrast" and parameter_name == "value":
+        return _signed_note(value, "Softens contrast.", "Increases contrast.")
+    if operation == "setExposure" and parameter_name == "value":
+        return _signed_note(value, "Darkens the clip.", "Brightens the clip.")
+    if operation == "setHighlights" and parameter_name == "value":
+        return _signed_note(value, "Recovers bright highlights.", "Lifts bright highlights.")
+    if operation == "setShadows" and parameter_name == "value":
+        return _signed_note(value, "Deepens shadows.", "Lifts shadows.")
+    return description.rstrip(".") + "."
+
+
+def _signed_note(value: float, negative_note: str, positive_note: str) -> str:
+    if value < 0:
+        return negative_note
+    if value > 0:
+        return positive_note
+    return "Leaves this parameter unchanged."
 
 
 async def _emit(event_handler: IntentEventHandler | None, payload: dict[str, Any]) -> None:

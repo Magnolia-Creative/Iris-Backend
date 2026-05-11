@@ -170,6 +170,7 @@ class ExperimentalEffectOperation(IntentCompilerBaseModel):
     target: SemanticEditTarget | None = None
     confidence: float
     parameters: dict[str, JSONValue] = Field(default_factory=dict)
+    parameterNotes: dict[str, str] = Field(default_factory=dict)
 
 
 class ExperimentalEffectPlan(IntentCompilerBaseModel):

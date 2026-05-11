@@ -97,6 +97,27 @@ def test_effect_parameters_are_clamped_to_capability_schema():
 
     assert warnings == []
     assert valid[0].parameters["amount"] == 1
+    assert valid[0].parameterNotes["amount"] == "Adds visible film grain."
+
+
+def test_missing_effect_parameters_are_inferred_with_value_notes():
+    capability = next(item for item in DEFAULT_EFFECT_CAPABILITIES if item.operation == "setTemperature")
+    operation = ExperimentalEffectOperation(
+        operation=capability.operation,
+        sourceText="make the clip cooler",
+        target={"type": "selectedClip"},
+        confidence=0.84,
+        parameters={},
+    )
+
+    valid, warnings = IntentCompilerService._validate_effect_operations(
+        [operation],
+        [RelevantEffectCapability(capability=capability, score=1.0)],
+    )
+
+    assert warnings == []
+    assert valid[0].parameters["value"] < 0
+    assert valid[0].parameterNotes["value"] == "Makes temperature cooler."
 
 
 def test_relevant_effect_capabilities_are_ranked_by_embedding_similarity():
