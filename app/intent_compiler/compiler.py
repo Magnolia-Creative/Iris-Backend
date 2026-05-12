@@ -312,6 +312,13 @@ class IntentCompiler:
         if clip is None:
             return self._needs(IntentCompileWarning.missingSelectedClip, "Which clip do you want to split?")
         position = self._time_expression(operation.parameters.get("position"))
+        playhead_us = context.playheadTimeUs
+        if (
+            position is None
+            and playhead_us is not None
+            and clip.timelineRange.start < playhead_us < clip.timelineRange.end
+        ):
+            position = TimeExpression(kind="playhead")
         if position is None:
             return self._needs(IntentCompileWarning.missingPlayhead, "Where do you want to split the clip?")
         at_time_us = self._resolve_time_us(position, clip, context, operation.sourceText)
@@ -711,20 +718,25 @@ class IntentCompiler:
     def _time_expression(self, value: Any) -> TimeExpression | None:
         if not isinstance(value, dict):
             return None
-        match value.get("type"):
+        raw_type = value.get("type")
+        expr_type = str(raw_type).lower() if raw_type is not None else None
+        match expr_type:
             case "playhead":
                 return TimeExpression(kind="playhead")
-            case "absoluteTimelineTime":
+            case "absolutetimelinetime":
                 raw_value = _float_value(value.get("value"))
                 raw_unit = value.get("unit")
                 unit = self._unit(str(raw_unit)) if raw_unit is not None else None
                 return TimeExpression(kind="absoluteTimelineTime", value=raw_value, unit=unit) if raw_value is not None and unit else None
-            case "fractionOfClip":
+            case "fractionofclip":
                 raw_value = _float_value(value.get("value"))
                 return TimeExpression(kind="fractionOfClip", value=raw_value) if raw_value is not None else None
-            case "afterStart" | "beforeEnd" as kind:
+            case "afterstart":
                 amount = self._duration_expression(value.get("amount"))
-                return TimeExpression(kind=kind, amount=amount) if amount else None
+                return TimeExpression(kind="afterStart", amount=amount) if amount else None
+            case "beforeend":
+                amount = self._duration_expression(value.get("amount"))
+                return TimeExpression(kind="beforeEnd", amount=amount) if amount else None
             case _:
                 return None
 

@@ -184,6 +184,66 @@ def test_remove_clip_ranges_rejects_out_of_clip_range():
     assert IntentCompileWarning.invalidRemoveRange in result.warnings
 
 
+def test_split_clip_defaults_to_playhead_when_position_omitted():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.splitClip,
+                sourceText="Split here.",
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(plan, original_prompt="Split here.", context=context)
+
+    assert result.needsClarification is False
+    assert len(result.actions) == 1
+    assert result.actions[0].payload["splitClip"] == {"clipId": "clip-b", "atTimeUs": 10_000_000}
+
+
+def test_split_clip_accepts_playhead_position_type_any_case():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.splitClip,
+                sourceText="Split here.",
+                target={"type": "selectedClip"},
+                parameters={"position": {"type": "Playhead"}},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(plan, original_prompt="Split here.", context=context)
+
+    assert result.actions[0].payload["splitClip"]["atTimeUs"] == 10_000_000
+
+
+def test_split_clip_without_position_clarifies_when_playhead_outside_clip():
+    context = IntentCompilerContext.model_validate({**_sample_context(), "playheadTimeUs": 25_000_000})
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.splitClip,
+                sourceText="Split here.",
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(plan, original_prompt="Split here.", context=context)
+
+    assert result.needsClarification is True
+    assert IntentCompileWarning.missingPlayhead in result.warnings
+
+
 def test_editor_context_includes_compact_transcript_pause_ranges():
     context = IntentCompilerContext.model_validate(
         {
