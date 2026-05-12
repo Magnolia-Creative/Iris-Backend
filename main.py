@@ -54,6 +54,7 @@ from app.services.realtime_transcription import (
 from app.intent_compiler.llm import IntentCompilerService
 from app.intent_compiler.models import IntentCompileRequest, IntentCompilerContext
 from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
+from app.intent_compiler.transcripts import hydrate_intent_transcript_context
 from app.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
@@ -215,8 +216,10 @@ async def create_project_agent_session(
 async def create_intent_run_endpoint(
     payload: IntentCompileRequest,
     request: Request,
+    db: AsyncSession = Depends(get_db),
 ):
-    run = create_intent_run(prompt=payload.prompt, context=payload.context)
+    context = await hydrate_intent_transcript_context(payload.context, db)
+    run = create_intent_run(prompt=payload.prompt, context=context)
     websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(
         "http://",
         "ws://",
