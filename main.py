@@ -54,7 +54,7 @@ from app.services.realtime_transcription import (
 from app.intent_compiler.llm import IntentCompilerService
 from app.intent_compiler.models import IntentCompileRequest, IntentCompilerContext
 from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
-from app.intent_compiler.transcripts import hydrate_intent_transcript_context
+from app.intent_compiler.transcripts import prepare_intent_transcript_context
 from app.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
@@ -123,8 +123,12 @@ def _is_timeline_approval_message(prompt: str) -> bool:
     return any(marker in normalized for marker in approval_markers)
 
 
-def _intent_context_log_summary(context: IntentCompilerContext) -> dict[str, Any]:
-    return {
+def _intent_context_log_summary(
+    context: IntentCompilerContext,
+    *,
+    hydration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
         "timeline_id": context.timelineId,
         "project_id": context.projectId,
         "session_id": context.sessionId,
@@ -134,6 +138,9 @@ def _intent_context_log_summary(context: IntentCompilerContext) -> dict[str, Any
         "track_count": len(context.orderedClipIdsByTrackId),
         "transcript_context_count": len(context.transcriptContextsByClipId),
     }
+    if hydration:
+        summary["transcript_hydration"] = hydration
+    return summary
 
 
 def _intent_result_log_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -246,11 +253,15 @@ async def create_intent_run_endpoint(
         len(payload.prompt),
         _intent_context_log_summary(payload.context),
     )
-    context = await hydrate_intent_transcript_context(payload.context, db)
+    context, hydration_meta = await prepare_intent_transcript_context(
+        prompt=payload.prompt,
+        context=payload.context,
+        db=db,
+    )
     logger.info(
         "[intent-runs] Context hydrated prompt_chars=%s context=%s",
         len(payload.prompt),
-        _intent_context_log_summary(context),
+        _intent_context_log_summary(context, hydration=hydration_meta),
     )
     run = create_intent_run(prompt=payload.prompt, context=context)
     websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(

@@ -44,6 +44,12 @@ class TranscriptPauseRange(IntentCompilerBaseModel):
     afterWord: str | None = None
 
 
+class TranscriptPhraseMatch(IntentCompilerBaseModel):
+    phrase: str
+    startUs: int
+    endUs: int
+
+
 class ClipTranscriptContext(IntentCompilerBaseModel):
     clipId: str
     transcriptId: int | str | None = None
@@ -51,6 +57,7 @@ class ClipTranscriptContext(IntentCompilerBaseModel):
     fullText: str | None = None
     words: list[TranscriptWord] = Field(default_factory=list)
     pauseRanges: list[TranscriptPauseRange] = Field(default_factory=list)
+    phraseMatches: list[TranscriptPhraseMatch] = Field(default_factory=list)
 
 
 class IntentCompilerContext(IntentCompilerBaseModel):

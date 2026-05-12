@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,7 @@ from app.intent_compiler.llm import (
     _editor_context,
 )
 from app.intent_compiler.models import (
+    ClipTranscriptContext,
     CompileSource,
     EffectCapability,
     EffectCapabilityParameter,
@@ -26,8 +28,10 @@ from app.intent_compiler.models import (
     SemanticEffectRequest,
     SemanticEditOperation,
     SemanticEditPlan,
+    TranscriptWord,
 )
-from app.intent_compiler.transcripts import hydrate_intent_transcript_context
+from app.intent_compiler.transcript_phrases import collect_phrase_matches
+from app.intent_compiler.transcripts import hydrate_intent_transcript_context, prepare_intent_transcript_context
 from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
 
 
@@ -182,6 +186,163 @@ def test_remove_clip_ranges_rejects_out_of_clip_range():
 
     assert result.actions == []
     assert IntentCompileWarning.invalidRemoveRange in result.warnings
+
+
+def test_prepare_intent_transcript_context_skips_hydration_without_signal():
+    async def _exercise():
+        context = IntentCompilerContext.model_validate(
+            {
+                **_sample_context(),
+                "transcriptContextsByClipId": {
+                    "clip-b": {"clipId": "clip-b", "transcriptId": "1"},
+                },
+            }
+        )
+
+        async def _hydrate_should_not_run(*_args, **_kwargs):
+            raise AssertionError("hydrate_intent_transcript_context should not run")
+
+        with patch(
+            "app.intent_compiler.transcripts.hydrate_intent_transcript_context",
+            side_effect=_hydrate_should_not_run,
+        ):
+            prepared, meta = await prepare_intent_transcript_context(
+                prompt="split here at the playhead",
+                context=context,
+                db=AsyncMock(),
+            )
+
+        assert prepared is context
+        assert meta["transcript_preflight"] == "skipped_no_signal"
+        assert meta["skip_reason"] == "no_transcript_intent_signal"
+
+    asyncio.run(_exercise())
+
+
+def test_prepare_intent_transcript_context_skips_when_transcript_needed_but_no_refs():
+    async def _exercise():
+        context = IntentCompilerContext.model_validate(_sample_context())
+
+        async def _hydrate_should_not_run(*_args, **_kwargs):
+            raise AssertionError("hydrate_intent_transcript_context should not run")
+
+        with patch(
+            "app.intent_compiler.transcripts.hydrate_intent_transcript_context",
+            side_effect=_hydrate_should_not_run,
+        ):
+            prepared, meta = await prepare_intent_transcript_context(
+                prompt="remove the long pauses",
+                context=context,
+                db=AsyncMock(),
+            )
+
+        assert prepared is context
+        assert meta["transcript_preflight"] == "skipped_empty_refs"
+        assert meta["skip_reason"] == "transcript_intent_but_no_clip_refs"
+
+    asyncio.run(_exercise())
+
+
+def test_prepare_intent_transcript_context_attaches_phrase_matches_after_hydrate():
+    async def _exercise():
+        context = IntentCompilerContext.model_validate(
+            {
+                **_sample_context(),
+                "transcriptContextsByClipId": {
+                    "clip-b": {"clipId": "clip-b", "transcriptId": "1"},
+                },
+            }
+        )
+
+        words = [
+            TranscriptWord(word="this", startUs=0, endUs=100_000),
+            TranscriptWord(word="is", startUs=100_000, endUs=200_000),
+            TranscriptWord(word="iris", startUs=200_000, endUs=400_000),
+        ]
+
+        async def fake_hydrate(ctx: IntentCompilerContext, _db):
+            return ctx.model_copy(
+                update={
+                    "transcriptContextsByClipId": {
+                        "clip-b": ClipTranscriptContext(
+                            clipId="clip-b",
+                            transcriptId=1,
+                            words=words,
+                            pauseRanges=[],
+                        )
+                    }
+                }
+            )
+
+        with patch(
+            "app.intent_compiler.transcripts.hydrate_intent_transcript_context",
+            side_effect=fake_hydrate,
+        ):
+            prepared, meta = await prepare_intent_transcript_context(
+                prompt='remove where I say "this is iris"',
+                context=context,
+                db=AsyncMock(),
+            )
+
+        assert meta["transcript_preflight"] == "hydrated"
+        assert meta["phrase_match_total"] >= 1
+        clip_ctx = prepared.transcriptContextsByClipId["clip-b"]
+        assert len(clip_ctx.phraseMatches) >= 1
+        assert "iris" in clip_ctx.phraseMatches[0].phrase.lower()
+
+    asyncio.run(_exercise())
+
+
+def test_collect_phrase_matches_finds_contiguous_words():
+    words = [
+        TranscriptWord(word="Hello,", startUs=0, endUs=50_000),
+        TranscriptWord(word="this", startUs=60_000, endUs=120_000),
+        TranscriptWord(word="is", startUs=120_000, endUs=180_000),
+        TranscriptWord(word="Iris.", startUs=180_000, endUs=240_000),
+    ]
+    matches = collect_phrase_matches('cut out "this is iris"', words)
+    assert len(matches) == 1
+    assert matches[0].startUs < matches[0].endUs
+
+
+def test_remove_clip_ranges_compiler_falls_back_to_phrase_matches():
+    words = [
+        TranscriptWord(word="hello", startUs=0, endUs=50_000),
+        TranscriptWord(word="this", startUs=60_000, endUs=120_000),
+        TranscriptWord(word="is", startUs=120_000, endUs=180_000),
+        TranscriptWord(word="iris", startUs=180_000, endUs=240_000),
+    ]
+    matches = collect_phrase_matches('cut "this is iris"', words)
+    context = IntentCompilerContext.model_validate(
+        {
+            **_sample_context(),
+            "transcriptContextsByClipId": {
+                "clip-b": ClipTranscriptContext(
+                    clipId="clip-b",
+                    words=words,
+                    pauseRanges=[],
+                    phraseMatches=matches,
+                )
+            },
+        }
+    )
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.removeClipRanges,
+                sourceText='cut "this is iris"',
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(plan, original_prompt='cut "this is iris"', context=context)
+
+    assert result.needsClarification is False
+    assert len(result.actions) == 1
+    assert result.actions[0].type == "REMOVE_CLIP_RANGES"
 
 
 def test_split_clip_defaults_to_playhead_when_position_omitted():

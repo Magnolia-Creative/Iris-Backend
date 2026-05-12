@@ -132,6 +132,11 @@ class IntentLLMCompiler:
             "- For requests to cut out dead space, silence, long pauses, or transcript gaps inside a clip, use "
             "removeClipRanges with sourceRanges copied from ctx.transcriptContext.pauseRanges. Do not use trimClip "
             "for an interior gap.\n"
+            "- When the user quotes a phrase or says where/when they say something and "
+            "ctx.transcriptContext.phraseMatches is non-empty, use removeClipRanges with those match start/end "
+            "microseconds (one range per match).\n"
+            "- If transcript-backed removal is implied but ctx.transcriptContext.pauseRanges and phraseMatches "
+            "are both empty, set needsClarification=true with a short question referencing missing transcript timing.\n"
             "- Only set needsClarification=true when required target/time/order cannot be inferred from ctx.\n"
             "- Preserve explicit units from user text, e.g. '2 seconds' means unit=second.\n"
             "Target shapes:\n"
@@ -788,6 +793,10 @@ def _compact_transcript_context(context: IntentCompilerContext, clip_id: str | N
         "wordTimeline": [
             {"word": word.word, "start": word.startUs, "end": word.endUs}
             for word in transcript.words[:120]
+        ],
+        "phraseMatches": [
+            {"phrase": match.phrase, "start": match.startUs, "end": match.endUs}
+            for match in transcript.phraseMatches[:20]
         ],
     }
 

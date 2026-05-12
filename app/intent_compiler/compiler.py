@@ -22,6 +22,7 @@ from app.intent_compiler.models import (
     SemanticTrackReference,
     TimeRange,
 )
+from app.intent_compiler.transcript_phrases import transcript_operation_wants_phrase_fallback
 
 
 DurationUnit = Literal["microsecond", "millisecond", "second", "minute"]
@@ -394,15 +395,24 @@ class IntentCompiler:
             return self._needs(IntentCompileWarning.missingSelectedClip, "Which clip do you want to remove dead space from?")
 
         source_ranges = self._source_ranges(operation.parameters.get("sourceRanges"))
-        if not source_ranges and _dead_space_terms(operation.sourceText):
+        ctx_tm = context.transcriptContextsByClipId.get(clip.clipId)
+        if not source_ranges and ctx_tm and _dead_space_terms(operation.sourceText):
             source_ranges = [
-                TimeRange(start=pause.startUs, end=pause.endUs)
-                for pause in context.transcriptContextsByClipId.get(clip.clipId, None).pauseRanges
-            ] if context.transcriptContextsByClipId.get(clip.clipId) else []
+                TimeRange(start=pause.startUs, end=pause.endUs) for pause in ctx_tm.pauseRanges
+            ]
+        if (
+            not source_ranges
+            and ctx_tm
+            and transcript_operation_wants_phrase_fallback(operation.sourceText)
+            and ctx_tm.phraseMatches
+        ):
+            source_ranges = [
+                TimeRange(start=match.startUs, end=match.endUs) for match in ctx_tm.phraseMatches
+            ]
         if not source_ranges:
             return self._needs(
                 IntentCompileWarning.missingTranscriptContext,
-                "I need transcript timing for this clip before I can remove the dead space.",
+                "I need transcript timing for this clip before I can remove those ranges.",
             )
         if _invalid_remove_ranges(source_ranges, clip.sourceRange):
             return self._needs(IntentCompileWarning.invalidRemoveRange, "Which source ranges should I remove?")
