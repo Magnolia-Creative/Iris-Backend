@@ -98,6 +98,11 @@ class IntentTimelineSimulator:
                 operation.targetClipId,
                 TimeRange.model_validate(params["sourceRange"]),
             )
+        elif operation.type == IntentEditType.removeClipRanges and operation.targetClipId:
+            self._apply_remove_ranges(
+                operation.targetClipId,
+                [TimeRange.model_validate(value) for value in params["sourceRanges"]],
+            )
         elif operation.type == IntentEditType.moveClip and operation.targetClipId:
             clip = self.clip(operation.targetClipId)
             if clip:
@@ -156,6 +161,35 @@ class IntentTimelineSimulator:
                 ),
             }
         )
+        self._pack_track(clip.trackId)
+
+    def _apply_remove_ranges(self, clip_id: str, source_ranges: list[TimeRange]) -> None:
+        clip = self.clip(clip_id)
+        if clip is None:
+            return
+        removal_ranges = _normalized_remove_ranges(source_ranges, clip.sourceRange)
+        if not removal_ranges:
+            return
+        survivor_ranges = _survivor_ranges(clip.sourceRange, removal_ranges)
+        order = self.ordered_clip_ids(clip.trackId)
+        if not survivor_ranges:
+            self._apply_remove(clip_id)
+            return
+
+        replacement_ids: list[str] = []
+        for index, source_range in enumerate(survivor_ranges):
+            survivor_id = clip_id if index == 0 else f"{clip_id}-range-{index + 1}"
+            replacement_ids.append(survivor_id)
+            self.clips_by_id[survivor_id] = Clip(
+                clip_id=survivor_id,
+                track_id=clip.trackId,
+                media_id=clip.mediaId,
+                source_range=source_range,
+                timeline_range=TimeRange(start=0, end=source_range.duration),
+            )
+        if clip_id in order:
+            clip_index = order.index(clip_id)
+            self.ordered_clip_ids_by_track_id[clip.trackId] = order[:clip_index] + replacement_ids + order[clip_index + 1 :]
         self._pack_track(clip.trackId)
 
     def _pack_track(self, track_id: str) -> None:
@@ -258,6 +292,8 @@ class IntentCompiler:
                 return self._resolve_remove(operation, context, simulator, previous_clip_id)
             case IntentEditType.trimClip:
                 return self._resolve_trim(operation, context, simulator, previous_clip_id)
+            case IntentEditType.removeClipRanges:
+                return self._resolve_remove_ranges(operation, context, simulator, previous_clip_id)
             case IntentEditType.moveClip:
                 return self._resolve_move(operation, context, simulator, previous_clip_id)
             case IntentEditType.replaceTrackClips:
@@ -327,6 +363,38 @@ class IntentCompiler:
             operation,
             clip_id=clip.clipId,
             parameters={"sourceRange": source_range.model_dump()},
+        )
+
+    def _resolve_remove_ranges(
+        self,
+        operation: SemanticEditOperation,
+        context: IntentCompilerContext,
+        simulator: IntentTimelineSimulator,
+        previous_clip_id: str | None,
+    ) -> Resolution:
+        clip = self._resolve_clip(operation.target, context, simulator, previous_clip_id)
+        if clip is None:
+            return self._needs(IntentCompileWarning.missingSelectedClip, "Which clip do you want to remove dead space from?")
+
+        source_ranges = self._source_ranges(operation.parameters.get("sourceRanges"))
+        if not source_ranges and _dead_space_terms(operation.sourceText):
+            source_ranges = [
+                TimeRange(start=pause.startUs, end=pause.endUs)
+                for pause in context.transcriptContextsByClipId.get(clip.clipId, None).pauseRanges
+            ] if context.transcriptContextsByClipId.get(clip.clipId) else []
+        if not source_ranges:
+            return self._needs(
+                IntentCompileWarning.missingTranscriptContext,
+                "I need transcript timing for this clip before I can remove the dead space.",
+            )
+
+        removal_ranges = _normalized_remove_ranges(source_ranges, clip.sourceRange)
+        if not removal_ranges:
+            return self._needs(IntentCompileWarning.invalidRemoveRange, "Which source ranges should I remove?")
+        return self._success(
+            operation,
+            clip_id=clip.clipId,
+            parameters={"sourceRanges": [source_range.model_dump() for source_range in removal_ranges]},
         )
 
     def _resolve_move(
@@ -469,6 +537,19 @@ class IntentCompiler:
                     }
                 },
             )
+        if operation.type == IntentEditType.removeClipRanges and operation.targetClipId:
+            return Action(
+                action_id=str(uuid4()),
+                timeline_id=context.timelineId,
+                created_at=created_at,
+                type=ActionType.removeClipRanges,
+                payload={
+                    "removeClipRanges": {
+                        "clipId": operation.targetClipId,
+                        "sourceRanges": operation.parameters["sourceRanges"],
+                    }
+                },
+            )
         if operation.type == IntentEditType.moveClip and operation.targetClipId:
             return Action(
                 action_id=str(uuid4()),
@@ -537,6 +618,14 @@ class IntentCompiler:
             source = TimeRange.model_validate(body.get("sourceRange"))
             if source.duration <= 0:
                 return [IntentCompileWarning.invalidTrimRange]
+        if "removeClipRanges" in payload:
+            body = payload["removeClipRanges"]
+            clip = context.clip(body.get("clipId"))
+            if clip is None:
+                return [IntentCompileWarning.clipNotFound]
+            source_ranges = self._source_ranges(body.get("sourceRanges"))
+            if _invalid_remove_ranges(source_ranges, clip.sourceRange):
+                return [IntentCompileWarning.invalidRemoveRange]
         if "moveClip" in payload:
             body = payload["moveClip"]
             clip = context.clip(body.get("clipId"))
@@ -637,6 +726,17 @@ class IntentCompiler:
             case _:
                 return None
 
+    def _source_ranges(self, value: Any) -> list[TimeRange]:
+        if not isinstance(value, list):
+            return []
+        ranges: list[TimeRange] = []
+        for item in value:
+            try:
+                ranges.append(TimeRange.model_validate(item))
+            except Exception:
+                continue
+        return ranges
+
     def _resolve_duration_us(self, expression: DurationExpression, clip: Clip, source_text: str | None) -> int | None:
         if expression.kind == "duration" and expression.value is not None and expression.unit is not None:
             explicit = self._explicit_duration_us(source_text, expression.value)
@@ -730,6 +830,55 @@ def _float_value(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalized_remove_ranges(source_ranges: list[TimeRange], clip_source_range: TimeRange) -> list[TimeRange]:
+    bounded: list[TimeRange] = []
+    for source_range in source_ranges:
+        start = max(clip_source_range.start, source_range.start)
+        end = min(clip_source_range.end, source_range.end)
+        if end > start:
+            bounded.append(TimeRange(start=start, end=end))
+
+    bounded.sort(key=lambda item: (item.start, item.end))
+    merged: list[TimeRange] = []
+    for source_range in bounded:
+        if not merged or source_range.start > merged[-1].end:
+            merged.append(source_range)
+        else:
+            merged[-1].end = max(merged[-1].end, source_range.end)
+    return merged
+
+
+def _survivor_ranges(clip_source_range: TimeRange, removal_ranges: list[TimeRange]) -> list[TimeRange]:
+    survivors: list[TimeRange] = []
+    cursor = clip_source_range.start
+    for removal_range in removal_ranges:
+        if removal_range.start > cursor:
+            survivors.append(TimeRange(start=cursor, end=removal_range.start))
+        cursor = max(cursor, removal_range.end)
+    if cursor < clip_source_range.end:
+        survivors.append(TimeRange(start=cursor, end=clip_source_range.end))
+    return [source_range for source_range in survivors if source_range.duration > 0]
+
+
+def _invalid_remove_ranges(source_ranges: list[TimeRange], clip_source_range: TimeRange) -> bool:
+    if not source_ranges:
+        return True
+    previous_end: int | None = None
+    for source_range in sorted(source_ranges, key=lambda item: (item.start, item.end)):
+        if source_range.duration <= 0:
+            return True
+        if source_range.start < clip_source_range.start or source_range.end > clip_source_range.end:
+            return True
+        if previous_end is not None and source_range.start < previous_end:
+            return True
+        previous_end = source_range.end
+    return False
+
+
+def _dead_space_terms(text: str | None) -> bool:
+    return bool(re.search(r"\b(dead\s*space|silence|silent|pause|pauses|gap|gaps)\b", text or "", re.IGNORECASE))
 
 
 def _spoken_number_value(value: str) -> float | None:

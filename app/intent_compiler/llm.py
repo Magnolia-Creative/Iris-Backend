@@ -104,7 +104,8 @@ class IntentLLMCompiler:
             "effect requests.\n"
             "Rules:\n"
             "- Style-only prompts must produce operations=[] and effectRequests with the style intent.\n"
-            "- Concrete timeline edits use only splitClip, removeClip, trimClip, moveClip, replaceTrackClips, unknown.\n"
+            "- Concrete timeline edits use only splitClip, removeClip, trimClip, removeClipRanges, moveClip, "
+            "replaceTrackClips, unknown.\n"
             "- Abstract visual look, mood, color grade, texture, vintage, cinematic, warmer, colder, faded, "
             "dreamy, grainy, or moody requests go in effectRequests, not operations.\n"
             "- Captions, audio, transitions, generative media, or unsupported non-visual effects should be unknown.\n"
@@ -120,6 +121,9 @@ class IntentLLMCompiler:
             "parameters.position={\"type\":\"fractionOfClip\",\"value\":0.5}.\n"
             "- If a split position is omitted and ctx.playheadTimeUs is inside the target clip, use "
             "parameters.position={\"type\":\"playhead\"}.\n"
+            "- For requests to cut out dead space, silence, long pauses, or transcript gaps inside a clip, use "
+            "removeClipRanges with sourceRanges copied from ctx.transcriptContext.pauseRanges. Do not use trimClip "
+            "for an interior gap.\n"
             "- Only set needsClarification=true when required target/time/order cannot be inferred from ctx.\n"
             "- Preserve explicit units from user text, e.g. '2 seconds' means unit=second.\n"
             "Target shapes:\n"
@@ -129,6 +133,8 @@ class IntentLLMCompiler:
             "Operation parameter shapes:\n"
             "- splitClip: parameters.position is playhead, absoluteTimelineTime, fractionOfClip, afterStart, or beforeEnd.\n"
             "- trimClip: parameters={\"edge\":\"start|end\",\"amount\":duration|percentage|vague}.\n"
+            "- removeClipRanges: parameters.sourceRanges is an array of source-time ranges in microseconds, "
+            "e.g. [{\"start\":1200000,\"end\":2200000}].\n"
             "- moveClip: parameters.placement is beginning|start|first|end|last, or orderedClipIds.\n"
             "- replaceTrackClips: parameters.orderedClipIds.\n"
             f"ctx={_json(_editor_context(context))}\n"
@@ -343,6 +349,7 @@ _CLIP_EDIT_TYPES = {
     IntentEditType.splitClip,
     IntentEditType.removeClip,
     IntentEditType.trimClip,
+    IntentEditType.removeClipRanges,
     IntentEditType.moveClip,
 }
 
@@ -711,6 +718,7 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
 def _editor_context(context: IntentCompilerContext) -> dict[str, Any]:
     current_clip_id = _current_clip_at_playhead_id(context)
     current_clip = context.clip(context.selectedClipId) or context.clip(current_clip_id)
+    transcript_context = _compact_transcript_context(context, current_clip.clipId if current_clip else None)
     return {
         "selectedClipId": context.selectedClipId,
         "selectedTrackId": context.selectedTrackId,
@@ -725,6 +733,7 @@ def _editor_context(context: IntentCompilerContext) -> dict[str, Any]:
             if current_clip
             else None
         ),
+        "transcriptContext": transcript_context,
         "orderedClipIdsByTrackId": context.orderedClipIdsByTrackId,
     }
 
@@ -742,6 +751,33 @@ def _current_clip_at_playhead_id(context: IntentCompilerContext) -> str | None:
             if clip and clip.timelineRange.start <= context.playheadTimeUs < clip.timelineRange.end:
                 return clip.clipId
     return None
+
+
+def _compact_transcript_context(context: IntentCompilerContext, clip_id: str | None) -> dict[str, Any] | None:
+    if not clip_id:
+        return None
+    transcript = context.transcriptContextsByClipId.get(clip_id)
+    if transcript is None:
+        return None
+    return {
+        "clipId": transcript.clipId,
+        "transcriptId": transcript.transcriptId,
+        "fullTextExcerpt": (transcript.fullText or "")[:500],
+        "pauseRanges": [
+            {
+                "start": pause.startUs,
+                "end": pause.endUs,
+                "duration": pause.durationUs,
+                "beforeWord": pause.beforeWord,
+                "afterWord": pause.afterWord,
+            }
+            for pause in transcript.pauseRanges[:20]
+        ],
+        "wordTimeline": [
+            {"word": word.word, "start": word.startUs, "end": word.endUs}
+            for word in transcript.words[:120]
+        ],
+    }
 
 
 def _json(value: Any) -> str:

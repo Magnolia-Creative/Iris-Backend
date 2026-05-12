@@ -30,14 +30,40 @@ class Clip(IntentCompilerBaseModel):
     timelineRange: TimeRange = Field(alias="timeline_range")
 
 
+class TranscriptWord(IntentCompilerBaseModel):
+    word: str
+    startUs: int
+    endUs: int
+
+
+class TranscriptPauseRange(IntentCompilerBaseModel):
+    startUs: int
+    endUs: int
+    durationUs: int
+    beforeWord: str | None = None
+    afterWord: str | None = None
+
+
+class ClipTranscriptContext(IntentCompilerBaseModel):
+    clipId: str
+    transcriptId: int | str | None = None
+    cacheKey: str | None = None
+    fullText: str | None = None
+    words: list[TranscriptWord] = Field(default_factory=list)
+    pauseRanges: list[TranscriptPauseRange] = Field(default_factory=list)
+
+
 class IntentCompilerContext(IntentCompilerBaseModel):
     timelineId: str
+    projectId: int | str | None = None
+    sessionId: int | str | None = None
     selectedClipId: str | None = None
     selectedTrackId: str | None = None
     selectedRange: TimeRange | None = None
     playheadTimeUs: int | None = None
     clipsById: dict[str, Clip] = Field(default_factory=dict)
     orderedClipIdsByTrackId: dict[str, list[str]] = Field(default_factory=dict)
+    transcriptContextsByClipId: dict[str, ClipTranscriptContext] = Field(default_factory=dict)
 
     def clip(self, clip_id: str | None) -> Clip | None:
         if clip_id is None:
@@ -56,10 +82,12 @@ class IntentCompileWarning(StrEnum):
     missingSelectedClip = "missingSelectedClip"
     missingPlayhead = "missingPlayhead"
     missingSelectedTrack = "missingSelectedTrack"
+    missingTranscriptContext = "missingTranscriptContext"
     clipNotFound = "clipNotFound"
     trackNotFound = "trackNotFound"
     splitTimeOutsideClip = "splitTimeOutsideClip"
     invalidTrimRange = "invalidTrimRange"
+    invalidRemoveRange = "invalidRemoveRange"
     invalidMoveOrder = "invalidMoveOrder"
     unsupportedAction = "unsupportedAction"
     unsupportedIntent = "unsupportedIntent"
@@ -76,6 +104,7 @@ class IntentEditType(StrEnum):
     splitClip = "splitClip"
     removeClip = "removeClip"
     trimClip = "trimClip"
+    removeClipRanges = "removeClipRanges"
     moveClip = "moveClip"
     replaceTrackClips = "replaceTrackClips"
     unknown = "unknown"
@@ -85,6 +114,7 @@ class ActionType(StrEnum):
     addClip = "ADD_CLIP"
     removeClip = "REMOVE_CLIP"
     trimClip = "TRIM_CLIP"
+    removeClipRanges = "REMOVE_CLIP_RANGES"
     splitClip = "SPLIT_CLIP"
     moveClip = "MOVE_CLIP"
     replaceTrackClips = "REPLACE_TRACK_CLIPS"
