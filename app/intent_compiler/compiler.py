@@ -229,7 +229,14 @@ class IntentCompiler:
         warnings: list[IntentCompileWarning] = []
 
         for operation in plan.operations:
-            resolved = self._resolve_operation(operation, context, simulator, previous_clip_id, previous_track_id)
+            resolved = self._resolve_operation(
+                operation,
+                context,
+                simulator,
+                previous_clip_id,
+                previous_track_id,
+                original_prompt,
+            )
             if resolved.status == "success" and resolved.operation:
                 action = self._make_action(resolved.operation, context)
                 if action is None:
@@ -284,6 +291,7 @@ class IntentCompiler:
         simulator: IntentTimelineSimulator,
         previous_clip_id: str | None,
         previous_track_id: str | None,
+        original_prompt: str,
     ) -> Resolution:
         match operation.type:
             case IntentEditType.splitClip:
@@ -291,7 +299,7 @@ class IntentCompiler:
             case IntentEditType.removeClip:
                 return self._resolve_remove(operation, context, simulator, previous_clip_id)
             case IntentEditType.trimClip:
-                return self._resolve_trim(operation, context, simulator, previous_clip_id)
+                return self._resolve_trim(operation, context, simulator, previous_clip_id, original_prompt)
             case IntentEditType.removeClipRanges:
                 return self._resolve_remove_ranges(operation, context, simulator, previous_clip_id)
             case IntentEditType.moveClip:
@@ -349,15 +357,17 @@ class IntentCompiler:
         context: IntentCompilerContext,
         simulator: IntentTimelineSimulator,
         previous_clip_id: str | None,
+        original_prompt: str,
     ) -> Resolution:
         clip = self._resolve_clip(operation.target, context, simulator, previous_clip_id)
         if clip is None:
             return self._needs(IntentCompileWarning.missingSelectedClip, "Which clip do you want to trim?")
-        edge = str(operation.parameters.get("edge") or "").lower() or self._infer_trim_edge(operation.sourceText)
+        combined_text = " ".join(part for part in (operation.sourceText, original_prompt) if part).strip()
+        edge = str(operation.parameters.get("edge") or "").lower() or self._infer_trim_edge(combined_text)
         amount = self._duration_expression(operation.parameters.get("amount"))
-        duration_us = self._resolve_duration_us(amount, clip, operation.sourceText) if amount else None
+        duration_us = self._resolve_duration_us(amount, clip, combined_text) if amount else None
         if duration_us is None:
-            duration_us = self._explicit_duration_us(operation.sourceText)
+            duration_us = self._explicit_duration_us(combined_text)
         if duration_us is None or duration_us <= 0 or duration_us >= clip.timelineRange.duration:
             return self._needs(IntentCompileWarning.invalidTrimRange, "How much do you want to trim?")
         if edge in {"start", "beginning"}:
@@ -705,7 +715,9 @@ class IntentCompiler:
         unit = self._unit(str(raw_unit)) if raw_unit is not None else None
         if raw_value is not None and unit is not None:
             return DurationExpression(kind="duration", value=raw_value, unit=unit)
-        match value.get("type"):
+        raw_type = value.get("type")
+        expr_type = str(raw_type).lower() if raw_type is not None else None
+        match expr_type:
             case "duration":
                 return DurationExpression(kind="duration", value=raw_value, unit=unit) if raw_value is not None and unit else None
             case "percentage":
@@ -783,9 +795,44 @@ class IntentCompiler:
             return clip.timelineRange.end - duration if duration is not None else None
         return None
 
+    def _idiomatic_trim_duration_us(self, text_lower: str, expected_value: float | None) -> int | None:
+        """Durations phrased as 'the first second' (one second), 'first two seconds', etc."""
+        if re.search(r"\b(?:the\s+)?first\s+second\b", text_lower):
+            if expected_value is not None and abs(1.0 - expected_value) > 0.000_001:
+                return None
+            return self._microseconds(1.0, "second")
+        match = re.search(
+            r"\b(?:the\s+)?first\s+(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+seconds?\b",
+            text_lower,
+        )
+        if match:
+            raw = match.group(1)
+            value = _float_value(raw) or _spoken_number_value(raw)
+            if value is None:
+                return None
+            if expected_value is not None and abs(value - expected_value) > 0.000_001:
+                return None
+            return self._microseconds(value, "second")
+        match = re.search(
+            r"\b(?:the\s+)?first\s+(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+minutes?\b",
+            text_lower,
+        )
+        if match:
+            raw = match.group(1)
+            value = _float_value(raw) or _spoken_number_value(raw)
+            if value is None:
+                return None
+            if expected_value is not None and abs(value - expected_value) > 0.000_001:
+                return None
+            return self._microseconds(value, "minute")
+        return None
+
     def _explicit_duration_us(self, text: str | None, expected_value: float | None = None) -> int | None:
         if not text:
             return None
+        idiomatic = self._idiomatic_trim_duration_us(text.lower(), expected_value)
+        if idiomatic is not None:
+            return idiomatic
         pattern = re.compile(
             r"\b(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*"
             r"(microseconds?|usec|us|milliseconds?|msec|ms|seconds?|secs?|sec|s|minutes?|mins?|min|m)\b",

@@ -440,6 +440,55 @@ def test_trim_infers_spoken_seconds_from_source_text():
     assert trim_payload["sourceRange"] == {"start": 2_000_000, "end": 10_000_000}
 
 
+def test_trim_first_second_idiom_parses_as_one_second():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.trimClip,
+                sourceText="",
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="Trim the first second of this clip.",
+        context=context,
+    )
+
+    assert result.needsClarification is False
+    assert len(result.actions) == 1
+    assert result.actions[0].payload["trimClip"]["sourceRange"] == {"start": 1_000_000, "end": 10_000_000}
+
+
+def test_trim_first_two_seconds_idiom():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.trimClip,
+                sourceText="trim start",
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="Please trim the first two seconds of this clip.",
+        context=context,
+    )
+
+    assert result.needsClarification is False
+    assert result.actions[0].payload["trimClip"]["sourceRange"] == {"start": 2_000_000, "end": 10_000_000}
+
+
 def test_relevant_effect_capabilities_are_ranked_by_embedding_similarity():
     warm_capability = _test_capability("setTemperature", "warm cool temperature golden hour")
     grain_capability = _test_capability("addGrain", "grain analog noise texture")
