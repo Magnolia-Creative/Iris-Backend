@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from decimal import Decimal
 import json
@@ -123,6 +123,29 @@ def _is_timeline_approval_message(prompt: str) -> bool:
     return any(marker in normalized for marker in approval_markers)
 
 
+def _intent_context_log_summary(context: IntentCompilerContext) -> dict[str, Any]:
+    return {
+        "timeline_id": context.timelineId,
+        "project_id": context.projectId,
+        "session_id": context.sessionId,
+        "selected_clip_id": context.selectedClipId,
+        "selected_track_id": context.selectedTrackId,
+        "clip_count": len(context.clipsById),
+        "track_count": len(context.orderedClipIdsByTrackId),
+        "transcript_context_count": len(context.transcriptContextsByClipId),
+    }
+
+
+def _intent_result_log_summary(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action_count": len(result.get("actions") or []),
+        "experimental_effect_count": len(result.get("experimentalEffectOperations") or []),
+        "warnings": result.get("warnings") or [],
+        "needs_clarification": result.get("needsClarification"),
+        "source": result.get("source"),
+    }
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Keep simple table creation for local development; use Alembic for production migrations.
@@ -218,13 +241,28 @@ async def create_intent_run_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info(
+        "[intent-runs] Create requested prompt_chars=%s context=%s",
+        len(payload.prompt),
+        _intent_context_log_summary(payload.context),
+    )
     context = await hydrate_intent_transcript_context(payload.context, db)
+    logger.info(
+        "[intent-runs] Context hydrated prompt_chars=%s context=%s",
+        len(payload.prompt),
+        _intent_context_log_summary(context),
+    )
     run = create_intent_run(prompt=payload.prompt, context=context)
     websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(
         "http://",
         "ws://",
         1,
     ).replace("https://", "wss://", 1)
+    logger.info(
+        "[intent-runs] Created run=%s websocket_url=%s",
+        run.run_id,
+        websocket_url,
+    )
     return {"run_id": run.run_id, "websocket_url": websocket_url}
 
 
@@ -483,8 +521,10 @@ async def intent_run_websocket(
     run_id: str,
 ) -> None:
     await websocket.accept()
+    logger.info("[intent-runs] WebSocket accepted run=%s", run_id)
     run = get_intent_run(run_id)
     if run is None:
+        logger.warning("[intent-runs] WebSocket run not found run=%s", run_id)
         await websocket.send_text(
             json.dumps(
                 {
@@ -498,9 +538,23 @@ async def intent_run_websocket(
         return
 
     async def send_event(payload: dict[str, Any]) -> None:
-        await websocket.send_text(json.dumps({"run_id": run_id, **payload}))
+        event_type = str(payload.get("type") or "<missing>")
+        message = json.dumps({"run_id": run_id, **payload})
+        logger.info(
+            "[intent-runs] Sending event run=%s type=%s bytes=%s",
+            run_id,
+            event_type,
+            len(message),
+        )
+        await websocket.send_text(message)
 
     try:
+        logger.info(
+            "[intent-runs] Compile starting run=%s prompt_chars=%s context=%s",
+            run_id,
+            len(run.prompt),
+            _intent_context_log_summary(run.context),
+        )
         await send_event({"type": "run_started", "prompt": run.prompt})
         service = IntentCompilerService()
         result = await service.compile_prompt(
@@ -508,26 +562,37 @@ async def intent_run_websocket(
             context=run.context,
             event_handler=send_event,
         )
+        result_payload = json.loads(result.model_dump_json(by_alias=True))
+        logger.info(
+            "[intent-runs] Compile completed run=%s summary=%s result_json=%s",
+            run_id,
+            _intent_result_log_summary(result_payload),
+            json.dumps(result_payload),
+        )
         await send_event(
             {
                 "type": "intent_result",
                 "prompt": run.prompt,
-                "result": json.loads(result.model_dump_json(by_alias=True)),
+                "result": result_payload,
             }
         )
         await websocket.close()
+        logger.info("[intent-runs] WebSocket closed normally run=%s", run_id)
     except WebSocketDisconnect:
         logger.info("[intent-runs] Client disconnected run=%s", run_id)
     except Exception:
         logger.exception("[intent-runs] Intent run failed run=%s", run_id)
-        await send_event(
-            {
-                "type": "error",
-                "detail": "Intent run failed; check server logs for details.",
-            }
-        )
-        await websocket.close(code=1011)
+        with suppress(WebSocketDisconnect, OSError, RuntimeError):
+            await send_event(
+                {
+                    "type": "error",
+                    "detail": "Intent run failed; check server logs for details.",
+                }
+            )
+        with suppress(WebSocketDisconnect, OSError, RuntimeError):
+            await websocket.close(code=1011)
     finally:
+        logger.info("[intent-runs] Deleting run=%s", run_id)
         delete_intent_run(run_id)
 
 
