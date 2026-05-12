@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import json
+import logging
 from math import sqrt
 import re
 from typing import Any, Protocol
@@ -31,6 +32,8 @@ from app.intent_compiler.models import (
 
 IntentEventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 EFFECT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+logger = logging.getLogger(__name__)
 
 
 class EffectEmbeddingClient(Protocol):
@@ -193,6 +196,7 @@ class IntentCompilerService:
         context: IntentCompilerContext,
         event_handler: IntentEventHandler | None = None,
     ) -> IntentCompileResult:
+        _log_intent_compile_incoming_context(prompt=prompt, context=context)
         await _emit(event_handler, {"type": "planner_started", "status": "Parsing prompt."})
         semantic_plan = await self.llm_compiler.make_semantic_plan(prompt, context)
         semantic_plan = _apply_contextual_assumptions(prompt, context, semantic_plan)
@@ -782,4 +786,20 @@ def _compact_transcript_context(context: IntentCompilerContext, clip_id: str | N
 
 def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _log_intent_compile_incoming_context(*, prompt: str, context: IntentCompilerContext) -> None:
+    """Emit full compiler context for each intent compile (prompt + API context + planner ctx)."""
+    payload: dict[str, Any] = {
+        "tag": "intent_compile_incoming",
+        "prompt": prompt,
+        "fullContext": context.model_dump(mode="json", by_alias=True),
+        "plannerEditorContext": _editor_context(context),
+    }
+    try:
+        line = json.dumps(payload, default=str)
+    except (TypeError, ValueError):
+        logger.exception("[intent-compile] Failed to serialize intent compile context")
+        return
+    logger.info("[intent-compile] %s", line)
 
