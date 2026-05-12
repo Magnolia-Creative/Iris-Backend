@@ -387,6 +387,8 @@ class IntentCompiler:
                 IntentCompileWarning.missingTranscriptContext,
                 "I need transcript timing for this clip before I can remove the dead space.",
             )
+        if _invalid_remove_ranges(source_ranges, clip.sourceRange):
+            return self._needs(IntentCompileWarning.invalidRemoveRange, "Which source ranges should I remove?")
 
         removal_ranges = _normalized_remove_ranges(source_ranges, clip.sourceRange)
         if not removal_ranges:

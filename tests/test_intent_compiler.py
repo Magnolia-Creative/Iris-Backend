@@ -10,6 +10,7 @@ from app.intent_compiler.llm import (
     IntentCompilerService,
     IntentLLMCompiler,
     _capability_embedding_text,
+    _editor_context,
 )
 from app.intent_compiler.models import (
     CompileSource,
@@ -26,6 +27,7 @@ from app.intent_compiler.models import (
     SemanticEditOperation,
     SemanticEditPlan,
 )
+from app.intent_compiler.transcripts import hydrate_intent_transcript_context
 from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
 
 
@@ -114,6 +116,162 @@ def test_effect_only_plan_preserves_experimental_effects_without_actions():
     assert result.actions == []
     assert result.experimentalEffectOperations[0].operation == "addGrain"
     assert IntentCompileWarning.unsupportedAction in result.warnings
+
+
+def test_dead_space_plan_emits_remove_clip_ranges_action():
+    context = IntentCompilerContext.model_validate(
+        {
+            **_sample_context(),
+            "transcriptContextsByClipId": {
+                "clip-b": {
+                    "clipId": "clip-b",
+                    "pauseRanges": [
+                        {
+                            "startUs": 2_000_000,
+                            "endUs": 3_000_000,
+                            "durationUs": 1_000_000,
+                            "beforeWord": "hello",
+                            "afterWord": "world",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.removeClipRanges,
+                sourceText="cut out the dead space",
+                target={"type": "selectedClip"},
+                parameters={},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(plan, original_prompt="cut out the dead space", context=context)
+
+    assert result.needsClarification is False
+    assert len(result.actions) == 1
+    action = result.actions[0]
+    assert action.type == "REMOVE_CLIP_RANGES"
+    assert action.payload == {
+        "removeClipRanges": {
+            "clipId": "clip-b",
+            "sourceRanges": [{"start": 2_000_000, "end": 3_000_000}],
+        }
+    }
+
+
+def test_remove_clip_ranges_rejects_out_of_clip_range():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.removeClipRanges,
+                sourceText="remove this dead space",
+                target={"type": "selectedClip"},
+                parameters={"sourceRanges": [{"start": 9_000_000, "end": 12_000_000}]},
+                confidence=0.9,
+            )
+        ],
+    )
+
+    result = IntentCompiler().compile(plan, original_prompt="remove this dead space", context=context)
+
+    assert result.actions == []
+    assert IntentCompileWarning.invalidRemoveRange in result.warnings
+
+
+def test_editor_context_includes_compact_transcript_pause_ranges():
+    context = IntentCompilerContext.model_validate(
+        {
+            **_sample_context(),
+            "transcriptContextsByClipId": {
+                "clip-b": {
+                    "clipId": "clip-b",
+                    "fullText": "hello world",
+                    "words": [
+                        {"word": "hello", "startUs": 1_000_000, "endUs": 1_300_000},
+                        {"word": "world", "startUs": 2_000_000, "endUs": 2_300_000},
+                    ],
+                    "pauseRanges": [
+                        {
+                            "startUs": 1_300_000,
+                            "endUs": 2_000_000,
+                            "durationUs": 700_000,
+                            "beforeWord": "hello",
+                            "afterWord": "world",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    editor_context = _editor_context(context)
+
+    assert editor_context["transcriptContext"]["fullTextExcerpt"] == "hello world"
+    assert editor_context["transcriptContext"]["pauseRanges"] == [
+        {
+            "start": 1_300_000,
+            "end": 2_000_000,
+            "duration": 700_000,
+            "beforeWord": "hello",
+            "afterWord": "world",
+        }
+    ]
+
+
+def test_hydrate_intent_transcript_context_reads_sql_and_caches(monkeypatch):
+    calls = {}
+
+    async def fake_get_cached_transcript(cache_key):
+        calls["cache_key"] = cache_key
+        return None
+
+    async def fake_get_transcript_payload(_db, transcript_id):
+        calls["transcript_id"] = transcript_id
+        return {
+            "full_text": "hello world",
+            "segments": [
+                {
+                    "text": "hello world",
+                    "words": [
+                        {"word": "hello", "start": 1.0, "end": 1.3},
+                        {"word": "world", "start": 2.0, "end": 2.3},
+                    ],
+                }
+            ],
+        }
+
+    async def fake_cache_transcript(session_id, clip_id, transcript_payload):
+        calls["cache"] = (session_id, clip_id, transcript_payload["full_text"])
+        return f"session:{session_id}:transcript:{clip_id}"
+
+    monkeypatch.setattr("app.intent_compiler.transcripts.get_cached_transcript", fake_get_cached_transcript)
+    monkeypatch.setattr("app.intent_compiler.transcripts.get_transcript_payload", fake_get_transcript_payload)
+    monkeypatch.setattr("app.intent_compiler.transcripts.cache_transcript", fake_cache_transcript)
+    context = IntentCompilerContext.model_validate(
+        {
+            **_sample_context(),
+            "sessionId": "session-1",
+            "transcriptContextsByClipId": {
+                "clip-b": {"clipId": "clip-b", "transcriptId": "501", "cacheKey": "missing-cache"}
+            },
+        }
+    )
+
+    hydrated = asyncio.run(hydrate_intent_transcript_context(context, object()))
+
+    transcript = hydrated.transcriptContextsByClipId["clip-b"]
+    assert calls["cache_key"] == "missing-cache"
+    assert calls["transcript_id"] == 501
+    assert calls["cache"] == ("session-1", "clip-b", "hello world")
+    assert transcript.cacheKey == "session:session-1:transcript:clip-b"
+    assert transcript.words[0].startUs == 1_000_000
+    assert transcript.pauseRanges[0].startUs == 1_300_000
 
 
 def test_effect_parameters_are_clamped_to_capability_schema():
