@@ -111,6 +111,97 @@ def test_create_project_agent_session_route(monkeypatch):
     assert response.json()["session_name"] == "Launch Day"
 
 
+def test_create_project_route(monkeypatch):
+    async def fake_create_project(db, *, name=None):
+        assert name == "My Doc"
+        return {"project_id": 42, "project_name": "My Doc"}
+
+    monkeypatch.setattr(main, "create_project", fake_create_project)
+    main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+
+    try:
+        with TestClient(main.app) as client:
+            response = client.post("/projects", json={"name": "My Doc"})
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+
+    main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json() == {"project_id": 42, "project_name": "My Doc"}
+
+
+def test_get_project_clips_status_route(monkeypatch):
+    async def fake_get_persisted_project_data(db, project_id, *, include_ingest_details=False):
+        assert project_id == 11
+        assert include_ingest_details is False
+        return {
+            "session_id": None,
+            "session_name": None,
+            "session_status": "ready",
+            "project_id": 11,
+            "project_name": "P",
+            "uploaded_count": 0,
+            "pending_clip_count": 0,
+            "settled_clip_count": 0,
+            "ready_for_websocket": False,
+            "videos": [],
+        }
+
+    monkeypatch.setattr(main, "get_persisted_project_data", fake_get_persisted_project_data)
+    main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+
+    try:
+        with TestClient(main.app) as client:
+            response = client.get("/projects/11/clips/status")
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+
+    main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["project_id"] == 11
+
+
+def test_create_agent_session_for_project_route(monkeypatch):
+    async def fake_create_agent_session_for_project(db, *, project_id, session_name=None):
+        assert project_id == 11
+        assert session_name == "Edit run"
+        return {
+            "session_id": 9,
+            "session_name": "Edit run",
+            "session_status": "created",
+            "project_id": 11,
+            "project_name": "Launch Day",
+            "uploaded_count": 0,
+            "pending_clip_count": 0,
+            "settled_clip_count": 0,
+            "ready_for_websocket": False,
+            "videos": [],
+        }
+
+    monkeypatch.setattr(main, "create_agent_session_for_project", fake_create_agent_session_for_project)
+    main.app.dependency_overrides[get_db] = _fake_db
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/projects/11/agent-sessions",
+                json={"session_name": "Edit run"},
+            )
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+
+    main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["session_id"] == 9
+    assert response.json()["project_id"] == 11
+
+
 def test_process_project_clip_batch_route(monkeypatch):
     async def fake_process_project_clips(
         db,
@@ -122,13 +213,13 @@ def test_process_project_clip_batch_route(monkeypatch):
         visual_frames_by_local_key=None,
     ):
         assert project_id == 11
-        assert session_id == 7
+        assert session_id is None
         assert local_keys == ["abc-123"]
         assert len(videos) == 1
         assert visual_frames_by_local_key is None
         return {
-            "session_id": 7,
-            "session_name": "Launch Day",
+            "session_id": None,
+            "session_name": None,
             "session_status": "processing",
             "project_id": 11,
             "project_name": "Launch Day",
@@ -139,7 +230,7 @@ def test_process_project_clip_batch_route(monkeypatch):
             "videos": [
                 {
                     "index": 1,
-                    "session_id": 7,
+                    "session_id": None,
                     "project_id": 11,
                     "clip_id": 99,
                     "transcript_id": None,
@@ -163,7 +254,7 @@ def test_process_project_clip_batch_route(monkeypatch):
         with TestClient(main.app) as client:
             response = client.post(
                 "/projects/11/clips/process",
-                data={"session_id": "7", "local_key": "abc-123"},
+                data={"local_key": "abc-123"},
                 files={"videos": ("clip.m4a", b"audio", "audio/mp4")},
             )
     finally:
@@ -190,6 +281,7 @@ def test_get_session_status_route(monkeypatch):
             "session_name": "Launch Day",
             "session_status": "ready",
             "project_id": 11,
+            "project_name": "Launch Day",
             "uploaded_count": 1,
             "pending_clip_count": 0,
             "settled_clip_count": 1,
@@ -231,10 +323,10 @@ def test_get_session_status_route(monkeypatch):
 def test_cancel_project_clip_route(monkeypatch):
     async def fake_cancel_clip_processing(db, *, project_id, session_id, local_key):
         assert project_id == 11
-        assert session_id == 7
+        assert session_id is None
         assert local_key == "abc-123"
         return {
-            "session_id": 7,
+            "session_id": None,
             "project_id": 11,
             "local_key": "abc-123",
             "task_cancelled": True,
@@ -250,7 +342,7 @@ def test_cancel_project_clip_route(monkeypatch):
 
     try:
         with TestClient(main.app) as client:
-            response = client.delete("/projects/11/clips/abc-123?session_id=7")
+            response = client.delete("/projects/11/clips/abc-123")
     finally:
         main.app.router.lifespan_context = original_lifespan
 

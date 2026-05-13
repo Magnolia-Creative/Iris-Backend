@@ -29,7 +29,7 @@ async def insert_embedding_row(
     db: AsyncSession,
     *,
     project_id: int,
-    session_id: int,
+    session_id: int | None,
     clip_id: int,
     local_key: str,
     modality: str,

@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, Numeric, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, Numeric, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -23,6 +23,11 @@ class Project(Base):
     clips: Mapped[list["Clip"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", passive_deletes=True
     )
+    sessions: Mapped[list["Session"]] = relationship(
+        "Session",
+        back_populates="project",
+        foreign_keys="Session.project_id",
+    )
 
 
 class Session(Base):
@@ -31,6 +36,9 @@ class Session(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
+    project_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -39,6 +47,11 @@ class Session(Base):
     )
     graph_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
+    project: Mapped["Project | None"] = relationship(
+        "Project",
+        foreign_keys="Session.project_id",
+        back_populates="sessions",
+    )
     clips: Mapped[list["Clip"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", passive_deletes=True
     )
@@ -49,7 +62,13 @@ class Clip(Base):
     __table_args__ = (
         Index("idx_clips_project_id", "project_id"),
         Index("idx_clips_session_id", "session_id"),
-        Index("idx_clips_session_local_key", "session_id", "local_key", unique=True),
+        Index(
+            "idx_clips_project_local_key",
+            "project_id",
+            "local_key",
+            unique=True,
+            postgresql_where=text("local_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

@@ -43,6 +43,8 @@ from app.services.session_debug_store import (
 from app.services.session_ingest import (
     cancel_clip_processing,
     create_agent_session,
+    create_agent_session_for_project,
+    create_project,
     ingest_session_clips,
     process_project_clips,
 )
@@ -59,7 +61,7 @@ from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_i
 from app.intent_compiler.transcripts import prepare_intent_transcript_context
 from app.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
-from app.services.transcript_store import get_persisted_session_data
+from app.services.transcript_store import get_persisted_project_data, get_persisted_session_data
 from app.database import models  # noqa: F401
 from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
@@ -95,6 +97,14 @@ class IngestCreate(BaseModel):
 
 class AgentSessionCreatePayload(BaseModel):
     project_name: str | None = None
+    session_name: str | None = None
+
+
+class ProjectCreatePayload(BaseModel):
+    name: str | None = None
+
+
+class AgentSessionForProjectCreatePayload(BaseModel):
     session_name: str | None = None
 
 
@@ -248,6 +258,40 @@ async def create_session_from_upload(
     }
 
 
+@app.post("/projects")
+async def create_project_endpoint(
+    payload: ProjectCreatePayload = Body(default=ProjectCreatePayload()),
+    db: AsyncSession = Depends(get_db),
+):
+    return await create_project(db, name=payload.name)
+
+
+@app.post("/projects/{project_id}/agent-sessions")
+async def create_agent_session_for_existing_project(
+    project_id: int,
+    payload: AgentSessionForProjectCreatePayload = Body(
+        default=AgentSessionForProjectCreatePayload()
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    return await create_agent_session_for_project(
+        db,
+        project_id=project_id,
+        session_name=payload.session_name,
+    )
+
+
+@app.get("/projects/{project_id}/clips/status")
+async def get_project_clips_status(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    payload = await get_persisted_project_data(db, project_id, include_ingest_details=False)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    return payload
+
+
 @app.post("/projects/agent-sessions")
 async def create_project_agent_session(
     payload: AgentSessionCreatePayload = Body(default=AgentSessionCreatePayload()),
@@ -300,7 +344,7 @@ async def process_project_clip_batch(
     project_id: int,
     videos: list[UploadFile] = File(...),
     local_keys: list[str] = Form(..., alias="local_key"),
-    session_id: int = Form(...),
+    session_id: int | None = Form(None),
     visual_frame_manifest: str | None = Form(None),
     visual_frames: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
@@ -394,14 +438,14 @@ async def get_session_debug(
 async def cancel_project_clip(
     project_id: int,
     local_key: str,
-    session_id: int,
+    session_id: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     return await cancel_clip_processing(
         db,
         project_id=project_id,
-        session_id=session_id,
         local_key=local_key,
+        session_id=session_id,
     )
 
 

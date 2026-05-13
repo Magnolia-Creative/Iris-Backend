@@ -9,17 +9,17 @@ def test_clip_task_registry_registers_cancels_and_clears_tasks():
 
         blocker = asyncio.Event()
         task = asyncio.create_task(blocker.wait())
-        await registry.register(session_id=7, local_key="abc-123", task=task)
+        await registry.register(project_id=11, local_key="abc-123", task=task)
 
-        assert await registry.active_count_for_session(7) == 1
-        assert await registry.cancel(session_id=7, local_key="abc-123") is True
+        assert await registry.active_count_for_project(11) == 1
+        assert await registry.cancel(project_id=11, local_key="abc-123") is True
 
         try:
             await task
         except asyncio.CancelledError:
             pass
 
-        assert await registry.active_count_for_session(7) == 0
-        assert await registry.cancel(session_id=7, local_key="abc-123") is False
+        assert await registry.active_count_for_project(11) == 0
+        assert await registry.cancel(project_id=11, local_key="abc-123") is False
 
     asyncio.run(exercise_registry())

@@ -21,13 +21,32 @@ from app.services.transcript_normalize import (
 from app.config import settings
 from app.services.clip_embedding_store import delete_embeddings_for_clip
 from app.services import gemini_embedding
-from app.services.transcript_store import get_persisted_session_data
+from app.services.transcript_store import (
+    get_persisted_project_data,
+    get_persisted_session_data,
+)
 from app.services.transcription import print_received_transcript, transcribe_upload_for_ingest
 from app.services.vector_index_runner import run_clip_vector_index
 from app.services.visual_frame_payload import VisualFrameChunk
 
 
 logger = logging.getLogger(__name__)
+
+
+async def create_project(
+    db: AsyncSession,
+    *,
+    name: str | None = None,
+) -> dict[str, Any]:
+    resolved_name = name or f"project-{datetime.utcnow().isoformat(timespec='seconds')}"
+    project = models.Project(name=resolved_name)
+    db.add(project)
+    await db.commit()
+    await db.refresh(project)
+    return {
+        "project_id": int(project.id),
+        "project_name": project.name,
+    }
 
 
 async def create_agent_session(
@@ -48,6 +67,7 @@ async def create_agent_session(
     db.add(session)
     db.add(project)
     await db.flush()
+    session.project_id = int(project.id)
     await db.commit()
     await db.refresh(session)
     await db.refresh(project)
@@ -63,6 +83,43 @@ async def create_agent_session(
         "settled_clip_count": 0,
         "ready_for_websocket": False,
         "videos": [],
+    }
+
+
+async def create_agent_session_for_project(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    session_name: str | None = None,
+) -> dict[str, Any]:
+    project = await _require_project(db, project_id=project_id)
+    resolved_session_name = session_name or project.name or f"session-{project_id}"
+    session = models.Session(
+        name=resolved_session_name,
+        status="created",
+        project_id=project_id,
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    payload = await get_persisted_project_data(db, project_id, include_ingest_details=False)
+    uploaded = payload["uploaded_count"] if payload else 0
+    pending = payload["pending_clip_count"] if payload else 0
+    settled = payload["settled_clip_count"] if payload else 0
+    ready_ws = payload["ready_for_websocket"] if payload else False
+
+    return {
+        "session_id": int(session.id),
+        "session_name": session.name,
+        "session_status": session.status,
+        "project_id": project_id,
+        "project_name": project.name,
+        "uploaded_count": uploaded,
+        "pending_clip_count": pending,
+        "settled_clip_count": settled,
+        "ready_for_websocket": ready_ws,
+        "videos": (payload or {}).get("videos") or [],
     }
 
 
@@ -90,13 +147,13 @@ async def ingest_session_clips(
 
 async def schedule_transcript_processing_tasks(
     *,
-    session_id: int,
+    project_id: int,
     pending_rows: list[tuple[dict[str, Any], models.Clip]],
 ) -> None:
     for prepared_video, clip in pending_rows:
         task = asyncio.create_task(
             _run_clip_transcription(
-                session_id=session_id,
+                project_id=project_id,
                 local_key=prepared_video["local_key"],
                 clip_id=int(clip.id),
                 video_bytes=prepared_video["video_bytes"],
@@ -108,7 +165,7 @@ async def schedule_transcript_processing_tasks(
             )
         )
         await clip_task_registry.register(
-            session_id=session_id,
+            project_id=project_id,
             local_key=prepared_video["local_key"],
             task=task,
         )
@@ -117,7 +174,7 @@ async def schedule_transcript_processing_tasks(
 def schedule_vector_index_tasks(
     *,
     project_id: int,
-    session_id: int,
+    session_id: int | None,
     pending_rows: list[tuple[dict[str, Any], models.Clip]],
     visual_frames_by_local_key: dict[str, list[VisualFrameChunk]] | None,
 ) -> int:
@@ -172,7 +229,7 @@ async def process_project_clips(
     db: AsyncSession,
     *,
     project_id: int,
-    session_id: int,
+    session_id: int | None,
     videos: list[UploadFile],
     local_keys: list[str],
     visual_frames_by_local_key: dict[str, list[VisualFrameChunk]] | None = None,
@@ -197,24 +254,31 @@ async def process_project_clips(
         len(videos),
         local_keys,
     )
-    session = await _require_session(db, session_id=session_id)
     project = await _require_project(db, project_id=project_id)
+    session: models.Session | None = None
+    if session_id is not None:
+        session = await _require_session(db, session_id=session_id)
+        if session.project_id is not None and int(session.project_id) != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="project_id does not match the session's linked project.",
+            )
+        session.status = "processing"
 
     vector_scheduled = 0
     try:
-        session.status = "processing"
         prepared_videos: list[dict[str, Any]] = []
         t_prepare = time.perf_counter()
         for index, (video, local_key) in enumerate(zip(videos, local_keys, strict=True), start=1):
-            existing_clip = await _get_clip_by_local_key(
+            existing_clip = await _get_clip_by_project_and_local_key(
                 db,
-                session_id=int(session.id),
+                project_id=int(project.id),
                 local_key=local_key,
             )
             if existing_clip is not None and existing_clip.processing_status == "ready":
                 logger.info(
-                    "[INGEST] Skipping already-ready clip session_id=%s local_key=%s clip_id=%s",
-                    session.id,
+                    "[INGEST] Skipping already-ready clip project_id=%s local_key=%s clip_id=%s",
+                    project.id,
                     local_key,
                     existing_clip.id,
                 )
@@ -259,7 +323,7 @@ async def process_project_clips(
         for prepared_video in prepared_videos:
             clip = models.Clip(
                 project_id=int(project.id),
-                session_id=int(session.id),
+                session_id=int(session.id) if session is not None else None,
                 title=Path(prepared_video["video"].filename or f"video-{prepared_video['index']}").stem,
                 file_name=prepared_video["video"].filename,
                 local_key=prepared_video["local_key"],
@@ -276,12 +340,12 @@ async def process_project_clips(
         await db.commit()
 
         await schedule_transcript_processing_tasks(
-            session_id=int(session.id),
+            project_id=int(project.id),
             pending_rows=pending_rows,
         )
         vector_scheduled = schedule_vector_index_tasks(
             project_id=int(project.id),
-            session_id=int(session.id),
+            session_id=int(session.id) if session is not None else None,
             pending_rows=pending_rows,
             visual_frames_by_local_key=visual_frames_by_local_key,
         )
@@ -293,12 +357,16 @@ async def process_project_clips(
         logger.exception("[INGEST] Unexpected ingest failure")
         raise HTTPException(status_code=500, detail="Ingest failed; check server logs for details.") from exc
 
-    result = await _build_session_payload(
-        db,
-        session_id=int(session.id),
-        fallback_project_id=int(project.id),
-        fallback_project_name=project.name,
-    )
+    if session is not None:
+        result = await _build_session_payload(
+            db,
+            session_id=int(session.id),
+            fallback_project_id=int(project.id),
+            fallback_project_name=project.name,
+        )
+    else:
+        result = await _build_project_payload(db, project_id=int(project.id))
+
     if not settings.semantic_indexing_enabled:
         result["vector_index"] = {"status": "disabled", "reason": "SEMANTIC_INDEXING_ENABLED=false"}
     elif not gemini_embedding.gemini_configured():
@@ -313,7 +381,7 @@ async def process_project_clips(
         "[INGEST] project_id=%s session_id=%s ingest completed uploaded_count=%s "
         "vector_index=%s total_duration_s=%.3f",
         project.id,
-        session.id,
+        session_id,
         result["uploaded_count"],
         result.get("vector_index"),
         time.perf_counter() - request_t0,
@@ -325,44 +393,62 @@ async def cancel_clip_processing(
     db: AsyncSession,
     *,
     project_id: int,
-    session_id: int,
     local_key: str,
+    session_id: int | None = None,
 ) -> dict[str, Any]:
-    task_cancelled = await clip_task_registry.cancel(session_id=session_id, local_key=local_key)
-    clip = await _get_clip_by_local_key(db, session_id=session_id, local_key=local_key)
+    clip = await _get_clip_by_project_and_local_key(
+        db, project_id=project_id, local_key=local_key
+    )
+    task_cancelled = await clip_task_registry.cancel(project_id=project_id, local_key=local_key)
     deleted_clip_id: int | None = None
 
-    if clip is not None and int(clip.project_id) == project_id:
+    if clip is not None:
         deleted_clip_id = int(clip.id)
         await _delete_clip_artifacts(db, clip)
         await db.commit()
     else:
         await db.rollback()
 
-    session = await _require_session(db, session_id=session_id)
-    payload = await _build_session_payload(
-        db,
-        session_id=session_id,
-        fallback_project_id=project_id,
-        fallback_project_name=None,
-    )
-    session.status = payload["session_status"]
-    await db.commit()
+    if session_id is not None:
+        session = await _require_session(db, session_id=session_id)
+        if session.project_id is not None and int(session.project_id) != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="project_id does not match the session's linked project.",
+            )
+        payload = await _build_session_payload(
+            db,
+            session_id=session_id,
+            fallback_project_id=project_id,
+            fallback_project_name=None,
+        )
+        session.status = payload["session_status"]
+        await db.commit()
+        return {
+            "session_id": session_id,
+            "project_id": project_id,
+            "local_key": local_key,
+            "task_cancelled": task_cancelled,
+            "deleted_clip_id": deleted_clip_id,
+            "session_status": payload["session_status"],
+            "ready_for_websocket": payload["ready_for_websocket"],
+        }
 
+    proj_payload = await get_persisted_project_data(db, project_id, include_ingest_details=False)
     return {
-        "session_id": session_id,
+        "session_id": None,
         "project_id": project_id,
         "local_key": local_key,
         "task_cancelled": task_cancelled,
         "deleted_clip_id": deleted_clip_id,
-        "session_status": payload["session_status"],
-        "ready_for_websocket": payload["ready_for_websocket"],
+        "session_status": (proj_payload or {}).get("session_status") or "created",
+        "ready_for_websocket": (proj_payload or {}).get("ready_for_websocket") or False,
     }
 
 
 async def _run_clip_transcription(
     *,
-    session_id: int,
+    project_id: int,
     local_key: str,
     clip_id: int,
     video_bytes: bytes,
@@ -408,7 +494,7 @@ async def _run_clip_transcription(
         async with SessionLocal() as db:
             await _mark_clip_failed(db, clip_id=clip_id, error_message=str(exc))
     finally:
-        await clip_task_registry.pop(session_id=session_id, local_key=local_key)
+        await clip_task_registry.pop(project_id=project_id, local_key=local_key)
 
 
 async def _persist_transcription_result(
@@ -490,6 +576,13 @@ async def _mark_clip_cancelled(db: AsyncSession, *, clip_id: int) -> None:
     await db.commit()
 
 
+async def _build_project_payload(db: AsyncSession, *, project_id: int) -> dict[str, Any]:
+    payload = await get_persisted_project_data(db, project_id, include_ingest_details=False)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    return payload
+
+
 async def _build_session_payload(
     db: AsyncSession,
     *,
@@ -505,7 +598,11 @@ async def _build_session_payload(
     if fallback_project_name is not None:
         payload["project_name"] = fallback_project_name
     else:
-        project = await _require_project(db, project_id=int(payload["project_id"])) if payload.get("project_id") else None
+        project = (
+            await _require_project(db, project_id=int(payload["project_id"]))
+            if payload.get("project_id")
+            else None
+        )
         payload["project_name"] = project.name if project is not None else None
 
     session = await _require_session(db, session_id=session_id)
@@ -530,15 +627,15 @@ async def _require_project(db: AsyncSession, *, project_id: int) -> models.Proje
     return project
 
 
-async def _get_clip_by_local_key(
+async def _get_clip_by_project_and_local_key(
     db: AsyncSession,
     *,
-    session_id: int,
+    project_id: int,
     local_key: str,
 ) -> models.Clip | None:
     result = await db.execute(
         select(models.Clip).where(
-            models.Clip.session_id == session_id,
+            models.Clip.project_id == project_id,
             models.Clip.local_key == local_key,
         )
     )

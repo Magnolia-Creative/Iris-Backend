@@ -21,7 +21,7 @@ MODEL_NAME = "gemini-embedding-2"
 async def run_clip_vector_index(
     *,
     project_id: int,
-    session_id: int,
+    session_id: int | None,
     clip_id: int,
     local_key: str,
     audio_bytes: bytes,
