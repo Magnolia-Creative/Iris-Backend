@@ -75,7 +75,7 @@ async def search_project_semantic(
         for r in rows
     ]
 
-    merged = merge_chunk_hits(hits)
+    merged = merge_chunk_hits(hits, project_id=project_id)
     top = merged[:lim]
 
     matches: list[dict[str, Any]] = []
