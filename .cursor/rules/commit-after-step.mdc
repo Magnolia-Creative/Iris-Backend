@@ -1,17 +1,48 @@
 ---
-description: Commit completed implementation steps immediately
+description: Commit every completed implementation step; no batching
 alwaysApply: true
 ---
 
-# Commit After Each Implementation Step
+# Commit After Each Implementation Step (mandatory)
 
-After completing each implementation step, immediately stage and commit the work:
+## Requirement
+
+After **each** completed implementation step, you **must** stage and commit before continuing to the next step or before treating the task as done for that slice of work. **Do not** accumulate several logical changes into a single commit for convenience.
+
+This is a standing explicit user instruction. **Do not ask for confirmation** before committing completed steps.
+
+## What counts as one step
+
+One step is a **single cohesive unit of work**, for example:
+
+- One new or changed endpoint, service, or migration (not the whole feature across many files unless that file set is truly one atomic change).
+- One test file or one focused test addition tied to the change you just made.
+- One config or dependency change.
+- One doc update tied to the prior code change (commit docs in the same commit as the code when they belong together; otherwise commit immediately after the doc edit as its own step).
+
+If you finish step A and start step B, **commit A first**. Do not defer commits to the end of the session.
+
+## Commands
+
+Prefer staging only paths you changed for this step when the repo has other unrelated modifications; otherwise:
 
 ```bash
 git add -A
 git commit -m "<descriptive message>"
 ```
 
-This is a standing explicit user instruction to commit. Do not ask for confirmation before committing completed implementation steps.
+Use a **clear, scoped commit message** per step (present tense or imperative; complete short sentence).
 
-Keep normal git safety practices in place: do not commit secrets, do not revert unrelated user changes, and use descriptive commit messages that summarize the completed step.
+## End of turn / handoff
+
+Before ending your response for a coding task, if the step is complete and there are **uncommitted** changes in this repo from that work, **commit them in this turn**. Do not leave completed implementation work uncommitted to "batch later."
+
+## Safety (unchanged)
+
+- Do not commit secrets.
+- Do not revert or discard unrelated user changes; stage only what belongs to your step when needed.
+- Do not commit generated noise you did not intentionally change (e.g. `__pycache__`, `.pyc`, editor user state) if avoidable—use `.gitignore` or selective `git add`.
+
+## Multi-repo work
+
+If a single task touches **Iris-Backend** and **Iris-Main** (or other roots), run a **separate commit in each repo** after the step that affects that repo, not one mental "big commit" across roots.
