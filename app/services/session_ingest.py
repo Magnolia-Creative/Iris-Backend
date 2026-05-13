@@ -122,11 +122,31 @@ def schedule_vector_index_tasks(
     visual_frames_by_local_key: dict[str, list[VisualFrameChunk]] | None,
 ) -> int:
     if not settings.semantic_indexing_enabled or not gemini_embedding.gemini_configured():
+        logger.info(
+            "[vector_index] skip scheduling project_id=%s session_id=%s reason=%s",
+            project_id,
+            session_id,
+            "SEMANTIC_INDEXING_ENABLED=false"
+            if not settings.semantic_indexing_enabled
+            else "GEMINI_API_KEY missing",
+        )
         return 0
     scheduled = 0
     for prepared_video, clip in pending_rows:
         local_key = prepared_video["local_key"]
         frames = (visual_frames_by_local_key or {}).get(local_key)
+        n_visual = len(frames) if frames else 0
+        audio_n = len(prepared_video["video_bytes"] or b"")
+        logger.info(
+            "[vector_index] scheduling task project_id=%s session_id=%s clip_id=%s local_key=%s "
+            "audio_bytes=%s visual_frame_payloads=%s",
+            project_id,
+            session_id,
+            int(clip.id),
+            local_key,
+            audio_n,
+            n_visual,
+        )
         asyncio.create_task(
             run_clip_vector_index(
                 project_id=project_id,
@@ -139,6 +159,12 @@ def schedule_vector_index_tasks(
             )
         )
         scheduled += 1
+    logger.info(
+        "[vector_index] scheduled %s clip(s) for embedding project_id=%s session_id=%s",
+        scheduled,
+        project_id,
+        session_id,
+    )
     return scheduled
 
 
@@ -164,7 +190,13 @@ async def process_project_clips(
         raise HTTPException(status_code=400, detail="Each local_key must be unique within a batch.")
 
     request_t0 = time.perf_counter()
-    logger.info("[INGEST] Received request with %d video(s)", len(videos))
+    logger.info(
+        "[INGEST] project_id=%s session_id=%s clip ingest started: %d video(s) local_keys=%s",
+        project_id,
+        session_id,
+        len(videos),
+        local_keys,
+    )
     session = await _require_session(db, session_id=session_id)
     project = await _require_project(db, project_id=project_id)
 
@@ -278,10 +310,12 @@ async def process_project_clips(
         }
     await db.commit()
     logger.info(
-        "[INGEST] Completed request session_id=%s project_id=%s with %d processed video(s) total_duration_s=%.3f",
-        session.id,
+        "[INGEST] project_id=%s session_id=%s ingest completed uploaded_count=%s "
+        "vector_index=%s total_duration_s=%.3f",
         project.id,
+        session.id,
         result["uploaded_count"],
+        result.get("vector_index"),
         time.perf_counter() - request_t0,
     )
     return result
@@ -517,6 +551,12 @@ async def _get_clip_by_id(db: AsyncSession, *, clip_id: int) -> models.Clip | No
 
 
 async def _delete_clip_artifacts(db: AsyncSession, clip: models.Clip) -> None:
+    logger.info(
+        "[embeddings] deleting clip artifacts project_id=%s clip_id=%s local_key=%s",
+        int(clip.project_id),
+        int(clip.id),
+        clip.local_key,
+    )
     if clip.session_id is not None:
         await delete_cached_transcript(str(clip.session_id), str(clip.id))
     await delete_embeddings_for_clip(db, clip_id=int(clip.id))

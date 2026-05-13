@@ -29,16 +29,50 @@ async def run_clip_vector_index(
     visual_frames: list[VisualFrameChunk] | None,
 ) -> None:
     if not gemini_embedding.gemini_configured():
-        logger.info("[vector_index] GEMINI_API_KEY missing; skip clip_id=%s", clip_id)
+        logger.info(
+            "[vector_index] skip run project_id=%s session_id=%s clip_id=%s local_key=%s reason=no_gemini_key",
+            project_id,
+            session_id,
+            clip_id,
+            local_key,
+        )
         return
+
+    n_audio = len(audio_bytes or b"")
+    n_visual = len(visual_frames or [])
+    logger.info(
+        "[vector_index] start project_id=%s session_id=%s clip_id=%s local_key=%s "
+        "audio_bytes=%s visual_frame_chunks=%s model=%s",
+        project_id,
+        session_id,
+        clip_id,
+        local_key,
+        n_audio,
+        n_visual,
+        MODEL_NAME,
+    )
+
+    audio_stored = 0
+    visual_stored = 0
 
     try:
         async with SessionLocal() as db:
             await clip_embedding_store.delete_embeddings_for_clip(db, clip_id=clip_id)
             await db.commit()
+        logger.info(
+            "[vector_index] cleared prior embedding rows project_id=%s clip_id=%s",
+            project_id,
+            clip_id,
+        )
 
         if ffmpeg_available() and audio_bytes:
             wav_chunks = slice_audio_to_wav_chunks(audio_bytes, suffix=audio_extension or ".m4a")
+            logger.info(
+                "[vector_index] audio slice pass project_id=%s clip_id=%s wav_chunks=%s ffmpeg_ok=True",
+                project_id,
+                clip_id,
+                len(wav_chunks),
+            )
             for idx, start, end, center, wav_bytes in wav_chunks:
                 try:
                     emb = await gemini_embedding.embed_audio_bytes(
@@ -46,7 +80,8 @@ async def run_clip_vector_index(
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[vector_index] audio embed failed clip_id=%s idx=%s: %s",
+                        "[vector_index] audio embed failed project_id=%s clip_id=%s chunk_index=%s: %s",
+                        project_id,
                         clip_id,
                         idx,
                         exc,
@@ -68,8 +103,40 @@ async def run_clip_vector_index(
                         model_name=MODEL_NAME,
                     )
                     await db.commit()
+                audio_stored += 1
+                logger.debug(
+                    "[vector_index] stored audio embedding project_id=%s clip_id=%s "
+                    "chunk_index=%s time=%.2f-%.2f center=%.2f dim=%s",
+                    project_id,
+                    clip_id,
+                    idx,
+                    start,
+                    end,
+                    center,
+                    len(emb),
+                )
+            logger.info(
+                "[vector_index] audio embedding summary project_id=%s clip_id=%s "
+                "wav_chunks=%s rows_stored=%s",
+                project_id,
+                clip_id,
+                len(wav_chunks),
+                audio_stored,
+            )
+        elif audio_bytes and not ffmpeg_available():
+            logger.warning(
+                "[vector_index] skip audio chunks project_id=%s clip_id=%s reason=ffmpeg_or_ffprobe_missing",
+                project_id,
+                clip_id,
+            )
 
         if visual_frames:
+            logger.info(
+                "[vector_index] visual embed pass project_id=%s clip_id=%s frames=%s",
+                project_id,
+                clip_id,
+                len(visual_frames),
+            )
             for frame in visual_frames:
                 try:
                     emb = await gemini_embedding.embed_image_bytes(
@@ -79,7 +146,8 @@ async def run_clip_vector_index(
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[vector_index] image embed failed clip_id=%s chunk=%s: %s",
+                        "[vector_index] image embed failed project_id=%s clip_id=%s chunk_index=%s: %s",
+                        project_id,
                         clip_id,
                         frame.chunk_index,
                         exc,
@@ -101,13 +169,41 @@ async def run_clip_vector_index(
                         model_name=MODEL_NAME,
                     )
                     await db.commit()
+                visual_stored += 1
+                logger.debug(
+                    "[vector_index] stored visual embedding project_id=%s clip_id=%s "
+                    "chunk_index=%s time=%.2f-%.2f dim=%s",
+                    project_id,
+                    clip_id,
+                    frame.chunk_index,
+                    frame.start_time_seconds,
+                    frame.end_time_seconds,
+                    len(emb),
+                )
+            logger.info(
+                "[vector_index] visual embedding summary project_id=%s clip_id=%s "
+                "frames_attempted=%s rows_stored=%s",
+                project_id,
+                clip_id,
+                len(visual_frames),
+                visual_stored,
+            )
 
         logger.info(
-            "[vector_index] completed clip_id=%s local_key=%s audio_chunks=%s visual_frames=%s",
+            "[vector_index] done project_id=%s session_id=%s clip_id=%s local_key=%s "
+            "audio_chunks_stored=%s visual_frames_stored=%s",
+            project_id,
+            session_id,
             clip_id,
             local_key,
-            "yes" if audio_bytes else "no",
-            len(visual_frames or []),
+            audio_stored,
+            visual_stored,
         )
     except Exception:
-        logger.exception("[vector_index] failed clip_id=%s local_key=%s", clip_id, local_key)
+        logger.exception(
+            "[vector_index] failed project_id=%s session_id=%s clip_id=%s local_key=%s",
+            project_id,
+            session_id,
+            clip_id,
+            local_key,
+        )

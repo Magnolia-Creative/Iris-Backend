@@ -305,6 +305,14 @@ async def process_project_clip_batch(
     visual_frames: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info(
+        "[clips/process] http project_id=%s session_id=%s videos=%s manifest=%s visual_frame_parts=%s",
+        project_id,
+        session_id,
+        len(videos),
+        visual_frame_manifest is not None and bool(visual_frame_manifest.strip()),
+        len(visual_frames),
+    )
     visual_map = await build_visual_frames_by_local_key(
         manifest_raw=visual_frame_manifest,
         visual_frame_files=visual_frames,
@@ -325,8 +333,16 @@ async def semantic_search_project(
     payload: SemanticSearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    preview = (payload.query or "").strip().replace("\n", " ")[:120]
+    logger.info(
+        "[semantic_search] http project_id=%s limit=%s query_preview=%r",
+        project_id,
+        payload.limit,
+        preview,
+    )
     result = await db.execute(select(models.Project).where(models.Project.id == project_id))
     if result.scalar_one_or_none() is None:
+        logger.info("[semantic_search] http project_id=%s not found", project_id)
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
     return await search_project_semantic(
         db,

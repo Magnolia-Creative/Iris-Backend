@@ -16,11 +16,13 @@ def _halfvec_literal(values: list[float]) -> str:
 
 
 async def delete_embeddings_for_clip(db: AsyncSession, *, clip_id: int) -> None:
-    await db.execute(
+    result = await db.execute(
         text("DELETE FROM clip_chunk_embeddings WHERE clip_id = :clip_id"),
         {"clip_id": clip_id},
     )
     await db.flush()
+    rc = getattr(result, "rowcount", None)
+    logger.info("[embeddings] cleared existing rows clip_id=%s rows_deleted=%s", clip_id, rc)
 
 
 async def insert_embedding_row(
@@ -129,6 +131,12 @@ async def search_project_nearest(
                 "score": score,
             }
         )
+    logger.info(
+        "[embeddings] search nearest project_id=%s limit=%s returned_rows=%s",
+        project_id,
+        limit,
+        len(out),
+    )
     return out
 
 
