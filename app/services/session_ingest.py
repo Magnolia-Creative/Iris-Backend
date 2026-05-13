@@ -18,8 +18,13 @@ from app.services.transcript_normalize import (
     normalize_transcript_segments,
     segments_to_full_text,
 )
+from app.config import settings
+from app.services.clip_embedding_store import delete_embeddings_for_clip
+from app.services import gemini_embedding
 from app.services.transcript_store import get_persisted_session_data
 from app.services.transcription import print_received_transcript, transcribe_upload_for_ingest
+from app.services.vector_index_runner import run_clip_vector_index
+from app.services.visual_frame_payload import VisualFrameChunk
 
 
 logger = logging.getLogger(__name__)
@@ -79,7 +84,62 @@ async def ingest_session_clips(
         session_id=created["session_id"],
         videos=videos,
         local_keys=local_keys,
+        visual_frames_by_local_key=None,
     )
+
+
+async def schedule_transcript_processing_tasks(
+    *,
+    session_id: int,
+    pending_rows: list[tuple[dict[str, Any], models.Clip]],
+) -> None:
+    for prepared_video, clip in pending_rows:
+        task = asyncio.create_task(
+            _run_clip_transcription(
+                session_id=session_id,
+                local_key=prepared_video["local_key"],
+                clip_id=int(clip.id),
+                video_bytes=prepared_video["video_bytes"],
+                extension=prepared_video.get("extension") or "",
+                index=prepared_video["index"],
+                file_name=prepared_video["video"].filename,
+                mime_type=prepared_video["video"].content_type,
+                clip_correlation_id=prepared_video.get("clip_correlation_id"),
+            )
+        )
+        await clip_task_registry.register(
+            session_id=session_id,
+            local_key=prepared_video["local_key"],
+            task=task,
+        )
+
+
+def schedule_vector_index_tasks(
+    *,
+    project_id: int,
+    session_id: int,
+    pending_rows: list[tuple[dict[str, Any], models.Clip]],
+    visual_frames_by_local_key: dict[str, list[VisualFrameChunk]] | None,
+) -> int:
+    if not settings.semantic_indexing_enabled or not gemini_embedding.gemini_configured():
+        return 0
+    scheduled = 0
+    for prepared_video, clip in pending_rows:
+        local_key = prepared_video["local_key"]
+        frames = (visual_frames_by_local_key or {}).get(local_key)
+        asyncio.create_task(
+            run_clip_vector_index(
+                project_id=project_id,
+                session_id=session_id,
+                clip_id=int(clip.id),
+                local_key=local_key,
+                audio_bytes=prepared_video["video_bytes"],
+                audio_extension=prepared_video.get("extension") or "",
+                visual_frames=frames,
+            )
+        )
+        scheduled += 1
+    return scheduled
 
 
 async def process_project_clips(
@@ -89,6 +149,7 @@ async def process_project_clips(
     session_id: int,
     videos: list[UploadFile],
     local_keys: list[str],
+    visual_frames_by_local_key: dict[str, list[VisualFrameChunk]] | None = None,
 ) -> dict[str, Any]:
     if not 1 <= len(videos) <= 10:
         raise HTTPException(
@@ -107,6 +168,7 @@ async def process_project_clips(
     session = await _require_session(db, session_id=session_id)
     project = await _require_project(db, project_id=project_id)
 
+    vector_scheduled = 0
     try:
         session.status = "processing"
         prepared_videos: list[dict[str, Any]] = []
@@ -181,25 +243,16 @@ async def process_project_clips(
         await db.flush()
         await db.commit()
 
-        for prepared_video, clip in pending_rows:
-            task = asyncio.create_task(
-                _run_clip_transcription(
-                    session_id=int(session.id),
-                    local_key=prepared_video["local_key"],
-                    clip_id=int(clip.id),
-                    video_bytes=prepared_video["video_bytes"],
-                    extension=prepared_video.get("extension") or "",
-                    index=prepared_video["index"],
-                    file_name=prepared_video["video"].filename,
-                    mime_type=prepared_video["video"].content_type,
-                    clip_correlation_id=prepared_video.get("clip_correlation_id"),
-                )
-            )
-            await clip_task_registry.register(
-                session_id=int(session.id),
-                local_key=prepared_video["local_key"],
-                task=task,
-            )
+        await schedule_transcript_processing_tasks(
+            session_id=int(session.id),
+            pending_rows=pending_rows,
+        )
+        vector_scheduled = schedule_vector_index_tasks(
+            project_id=int(project.id),
+            session_id=int(session.id),
+            pending_rows=pending_rows,
+            visual_frames_by_local_key=visual_frames_by_local_key,
+        )
     except HTTPException:
         await db.rollback()
         raise
@@ -214,6 +267,15 @@ async def process_project_clips(
         fallback_project_id=int(project.id),
         fallback_project_name=project.name,
     )
+    if not settings.semantic_indexing_enabled:
+        result["vector_index"] = {"status": "disabled", "reason": "SEMANTIC_INDEXING_ENABLED=false"}
+    elif not gemini_embedding.gemini_configured():
+        result["vector_index"] = {"status": "disabled", "reason": "GEMINI_API_KEY missing"}
+    else:
+        result["vector_index"] = {
+            "status": "scheduled",
+            "scheduled_clip_count": vector_scheduled,
+        }
     await db.commit()
     logger.info(
         "[INGEST] Completed request session_id=%s project_id=%s with %d processed video(s) total_duration_s=%.3f",
@@ -457,6 +519,7 @@ async def _get_clip_by_id(db: AsyncSession, *, clip_id: int) -> models.Clip | No
 async def _delete_clip_artifacts(db: AsyncSession, clip: models.Clip) -> None:
     if clip.session_id is not None:
         await delete_cached_transcript(str(clip.session_id), str(clip.id))
+    await delete_embeddings_for_clip(db, clip_id=int(clip.id))
     await db.delete(clip)
     await db.flush()
 

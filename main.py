@@ -22,7 +22,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
@@ -46,6 +46,7 @@ from app.services.session_ingest import (
     ingest_session_clips,
     process_project_clips,
 )
+from app.services.semantic_search_service import search_project_semantic
 from app.services.session_state_builder import build_initial_state_from_session_payload
 from app.services.realtime_transcription import (
     ALLOWED_TRANSCRIBE_MODELS,
@@ -60,6 +61,7 @@ from app.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import get_persisted_session_data
 from app.database import models  # noqa: F401
+from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
 
 logging.basicConfig(
@@ -94,6 +96,11 @@ class IngestCreate(BaseModel):
 class AgentSessionCreatePayload(BaseModel):
     project_name: str | None = None
     session_name: str | None = None
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str
+    limit: int | None = None
 
 
 class WebSocketSessionStartPayload(BaseModel):
@@ -294,14 +301,38 @@ async def process_project_clip_batch(
     videos: list[UploadFile] = File(...),
     local_keys: list[str] = Form(..., alias="local_key"),
     session_id: int = Form(...),
+    visual_frame_manifest: str | None = Form(None),
+    visual_frames: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
 ):
+    visual_map = await build_visual_frames_by_local_key(
+        manifest_raw=visual_frame_manifest,
+        visual_frame_files=visual_frames,
+    )
     return await process_project_clips(
         db,
         project_id=project_id,
         session_id=session_id,
         videos=videos,
         local_keys=local_keys,
+        visual_frames_by_local_key=visual_map if visual_map else None,
+    )
+
+
+@app.post("/projects/{project_id}/semantic-search")
+async def semantic_search_project(
+    project_id: int,
+    payload: SemanticSearchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    return await search_project_semantic(
+        db,
+        project_id=project_id,
+        query=payload.query,
+        limit=payload.limit,
     )
 
 

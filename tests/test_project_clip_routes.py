@@ -112,11 +112,20 @@ def test_create_project_agent_session_route(monkeypatch):
 
 
 def test_process_project_clip_batch_route(monkeypatch):
-    async def fake_process_project_clips(db, *, project_id, session_id, videos, local_keys):
+    async def fake_process_project_clips(
+        db,
+        *,
+        project_id,
+        session_id,
+        videos,
+        local_keys,
+        visual_frames_by_local_key=None,
+    ):
         assert project_id == 11
         assert session_id == 7
         assert local_keys == ["abc-123"]
         assert len(videos) == 1
+        assert visual_frames_by_local_key is None
         return {
             "session_id": 7,
             "session_name": "Launch Day",
@@ -142,6 +151,7 @@ def test_process_project_clip_batch_route(monkeypatch):
                     "processing_error": None,
                 }
             ],
+            "vector_index": {"status": "scheduled", "scheduled_clip_count": 1},
         }
 
     monkeypatch.setattr(main, "process_project_clips", fake_process_project_clips)
@@ -248,3 +258,81 @@ def test_cancel_project_clip_route(monkeypatch):
     assert response.status_code == 200
     assert response.json()["task_cancelled"] is True
     assert response.json()["deleted_clip_id"] == 99
+
+
+class _FakeExecResult:
+    def __init__(self, row):
+        self._row = row
+
+    def scalar_one_or_none(self):
+        return self._row
+
+
+class _FakeSessionSemantic404:
+    async def execute(self, *args, **kwargs):
+        return _FakeExecResult(None)
+
+
+async def _fake_db_semantic_404() -> AsyncIterator[object]:
+    yield _FakeSessionSemantic404()
+
+
+def test_semantic_search_project_not_found(monkeypatch):
+    main.app.dependency_overrides[get_db] = _fake_db_semantic_404
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+    try:
+        with TestClient(main.app) as client:
+            response = client.post("/projects/40404/semantic-search", json={"query": "crash"})
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+class _FakeSessionSemantic200:
+    async def execute(self, *args, **kwargs):
+        return _FakeExecResult(object())
+
+
+async def _fake_db_semantic_200() -> AsyncIterator[object]:
+    yield _FakeSessionSemantic200()
+
+
+def test_semantic_search_project_route(monkeypatch):
+    async def fake_search(db, *, project_id, query, limit=None):
+        assert project_id == 11
+        assert query == "car"
+        assert limit == 3
+        return {
+            "matches": [
+                {
+                    "clip_id": 99,
+                    "local_key": "abc",
+                    "file_name": "x.m4a",
+                    "start_time_seconds": 0.0,
+                    "end_time_seconds": 4.0,
+                    "confidence": 0.9,
+                    "source": "audio",
+                }
+            ],
+            "query": query,
+        }
+
+    monkeypatch.setattr(main, "search_project_semantic", fake_search)
+    main.app.dependency_overrides[get_db] = _fake_db_semantic_200
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/projects/11/semantic-search",
+                json={"query": "car", "limit": 3},
+            )
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matches"][0]["file_name"] == "x.m4a"
+    assert body["matches"][0]["local_key"] == "abc"

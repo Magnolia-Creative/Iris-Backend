@@ -40,6 +40,8 @@ class Settings:
         # If unset, code uses certifi’s bundle. Set to your corporate root CA if behind SSL inspection.
         # Standard env: SSL_CERT_FILE; alias: SSL_CA_BUNDLE.
         self.outbound_ssl_cafile = os.getenv("SSL_CERT_FILE") or os.getenv("SSL_CA_BUNDLE")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.semantic_indexing_enabled = _env_bool("SEMANTIC_INDEXING_ENABLED", True)
 
 
 settings = Settings()
