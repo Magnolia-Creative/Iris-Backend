@@ -1,4 +1,11 @@
-"""Merge adjacent chunk hits (ported from Iris-Main TemporalRangeScorer)."""
+"""Merge adjacent chunk hits (ported from Iris-Main TemporalRangeScorer).
+
+Spike-aware: within each time-contiguous component, when score spread is wide
+enough, keep only chunks whose similarity is near the local peak (floor =
+peak - spread * max_normalized_drop), so weak shoulders before/after a spike
+are not chained into the same range. Optional boundary refinement interpolates
+the crossing time between chunk centers and the floor threshold.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +20,8 @@ from app.services.semantic_constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SCORE_INTERP_EPS = 1e-9
 
 
 @dataclass(frozen=True)
@@ -113,6 +122,234 @@ def _dedupe_hits_by_chunk_index(clip_hits: list[ChunkHit]) -> list[ChunkHit]:
     return list(best_by_idx.values())
 
 
+def _split_time_components(
+    sorted_hits: list[ChunkHit],
+    *,
+    max_gap_seconds: float,
+) -> list[list[ChunkHit]]:
+    """Split into maximal time-contiguous runs (gap = next.start - prev.end)."""
+    if not sorted_hits:
+        return []
+    out: list[list[ChunkHit]] = [[sorted_hits[0]]]
+    for h in sorted_hits[1:]:
+        gap = h.start_time_seconds - out[-1][-1].end_time_seconds
+        if gap > max_gap_seconds:
+            out.append([h])
+        else:
+            out[-1].append(h)
+    return out
+
+
+def _interp_rising_threshold_time(prev_hit: ChunkHit, hi_hit: ChunkHit, floor: float) -> float | None:
+    """Time where linear score between chunk centers crosses ``floor`` (rising edge)."""
+    t0, s0 = prev_hit.center_time_seconds, prev_hit.score
+    t1, s1 = hi_hit.center_time_seconds, hi_hit.score
+    if s1 - s0 <= _SCORE_INTERP_EPS:
+        return None
+    if not (s0 < floor <= s1):
+        return None
+    return t0 + (floor - s0) / (s1 - s0) * (t1 - t0)
+
+
+def _interp_falling_threshold_time(hi_hit: ChunkHit, next_hit: ChunkHit, floor: float) -> float | None:
+    """Time where linear score between chunk centers crosses ``floor`` (falling edge)."""
+    t0, s0 = hi_hit.center_time_seconds, hi_hit.score
+    t1, s1 = next_hit.center_time_seconds, next_hit.score
+    if s0 - s1 <= _SCORE_INTERP_EPS:
+        return None
+    if not (s1 < floor <= s0):
+        return None
+    return t0 + (floor - s0) / (s1 - s0) * (t1 - t0)
+
+
+def _refine_island_wall_times(
+    component: list[ChunkHit],
+    island_hits: list[ChunkHit],
+    floor: float,
+) -> tuple[float, float]:
+    """Union of island windows, optionally tightened using floor crossing vs neighbors."""
+    if not island_hits:
+        raise ValueError("island_hits must be non-empty")
+
+    first = island_hits[0]
+    last = island_hits[-1]
+    raw_start = min(h.start_time_seconds for h in island_hits)
+    raw_end = max(h.end_time_seconds for h in island_hits)
+
+    try:
+        i_first = component.index(first)
+    except ValueError:
+        i_first = -1
+    try:
+        i_last = component.index(last)
+    except ValueError:
+        i_last = -1
+
+    start_t = raw_start
+    if i_first > 0:
+        prev_hit = component[i_first - 1]
+        t_rise = _interp_rising_threshold_time(prev_hit, first, floor)
+        if t_rise is not None:
+            # Crossing should land at or after the first spike window starts.
+            start_t = max(raw_start, t_rise)
+
+    end_t = raw_end
+    if i_last >= 0 and i_last + 1 < len(component):
+        next_hit = component[i_last + 1]
+        t_fall = _interp_falling_threshold_time(last, next_hit, floor)
+        if t_fall is not None:
+            end_t = min(raw_end, t_fall)
+
+    if end_t < start_t:
+        end_t = raw_end
+        start_t = raw_start
+    return start_t, end_t
+
+
+def _segment_by_score_floor(
+    component: list[ChunkHit],
+    *,
+    floor: float,
+) -> list[tuple[str, list[ChunkHit]]]:
+    """Split into alternating time-contiguous runs above vs below the peak-relative floor.
+
+    Below-floor runs are still returned as separate ranges (weak tails / shoulders) so
+    behavior matches the prior drop-split tests while spike islands stay tight.
+    """
+    segments: list[tuple[str, list[ChunkHit]]] = []
+    cur: list[ChunkHit] = []
+    cur_kind: str | None = None
+    for h in component:
+        kind = "high" if h.score >= floor else "low"
+        if not cur:
+            cur = [h]
+            cur_kind = kind
+        elif kind == cur_kind:
+            cur.append(h)
+        else:
+            if cur_kind is not None:
+                segments.append((cur_kind, cur))
+            cur = [h]
+            cur_kind = kind
+    if cur and cur_kind is not None:
+        segments.append((cur_kind, cur))
+    return segments
+
+
+def _merge_time_component(
+    component: list[ChunkHit],
+    *,
+    clip_id: int,
+    max_normalized_drop_vs_clip_spread: float,
+    min_clip_score_spread: float,
+    project_id: int | None,
+    ctx: str,
+) -> list[MergedRange]:
+    """Merge one time-contiguous chunk list into one or more MergedRange rows."""
+    scores = [h.score for h in component]
+    comp_min = min(scores)
+    comp_max = max(scores)
+    comp_spread = comp_max - comp_min
+    use_peak_floor = comp_spread >= min_clip_score_spread
+
+    logger.info(
+        "[chunk_range_merge] %sclip_id=%s time_component chunks=%s comp_score_min=%.4f "
+        "comp_score_max=%.4f comp_spread=%.4f peak_floor_mode=%s",
+        ctx,
+        clip_id,
+        len(component),
+        comp_min,
+        comp_max,
+        comp_spread,
+        use_peak_floor,
+    )
+
+    first = component[0]
+    local_key = first.local_key
+    file_name = first.file_name
+    modality = first.modality
+
+    out: list[MergedRange] = []
+
+    if not use_peak_floor:
+        rs = min(h.start_time_seconds for h in component)
+        re = max(h.end_time_seconds for h in component)
+        mr = _build_merged_group(
+            clip_id=clip_id,
+            local_key=local_key,
+            file_name=file_name,
+            modality=modality,
+            start_time_seconds=rs,
+            end_time_seconds=re,
+            chunk_hits=component,
+        )
+        out.append(mr)
+        _log_merged_range(
+            mr,
+            component,
+            project_id=project_id,
+            range_closure="component_low_spread_merge",
+        )
+        return out
+
+    floor = comp_max - comp_spread * max_normalized_drop_vs_clip_spread
+    logger.info(
+        "[chunk_range_merge] %sclip_id=%s peak_relative_floor=%.4f "
+        "(peak - comp_spread * max_normalized_drop_vs_clip_spread)",
+        ctx,
+        clip_id,
+        floor,
+    )
+
+    segments = _segment_by_score_floor(component, floor=floor)
+    if not segments:
+        rs = min(h.start_time_seconds for h in component)
+        re = max(h.end_time_seconds for h in component)
+        mr = _build_merged_group(
+            clip_id=clip_id,
+            local_key=local_key,
+            file_name=file_name,
+            modality=modality,
+            start_time_seconds=rs,
+            end_time_seconds=re,
+            chunk_hits=component,
+        )
+        out.append(mr)
+        _log_merged_range(
+            mr,
+            component,
+            project_id=project_id,
+            range_closure="component_peak_floor_fallback",
+        )
+        return out
+
+    for kind, seg_hits in segments:
+        if kind == "high":
+            rs, re = _refine_island_wall_times(component, seg_hits, floor)
+            closure = "peak_relative_floor_island"
+            if rs != min(h.start_time_seconds for h in seg_hits) or re != max(
+                h.end_time_seconds for h in seg_hits
+            ):
+                closure = "peak_relative_floor_island_interpolated"
+        else:
+            rs = min(h.start_time_seconds for h in seg_hits)
+            re = max(h.end_time_seconds for h in seg_hits)
+            closure = "below_peak_floor_segment"
+        mr = _build_merged_group(
+            clip_id=clip_id,
+            local_key=local_key,
+            file_name=file_name,
+            modality=modality,
+            start_time_seconds=rs,
+            end_time_seconds=re,
+            chunk_hits=seg_hits,
+        )
+        out.append(mr)
+        _log_merged_range(mr, seg_hits, project_id=project_id, range_closure=closure)
+
+    return out
+
+
 def merge_chunk_hits(
     hits: list[ChunkHit],
     *,
@@ -127,9 +364,10 @@ def merge_chunk_hits(
     logger.info(
         "[chunk_range_merge] %sstart raw_hits=%s thresholds: minimum_score=%.4f (drop at <=) "
         "max_gap_seconds=%.4f min_clip_score_spread=%.4f max_normalized_drop_vs_clip_spread=%.4f "
-        "dedupe_by_chunk_index=%s - per clip: dedupe, sort by time, extend while time gap ok; "
-        "if clip score spread (max-min) >= min_clip_score_spread, also split when "
-        "(range_peak - next_score) / spread > max_normalized_drop (else score-tier split off).",
+        "dedupe_by_chunk_index=%s - per clip: dedupe, sort by time, split by time gap; "
+        "within each time component, if comp_spread >= min_clip_score_spread, keep contiguous "
+        "chunks with score >= peak - comp_spread * max_normalized_drop (else merge whole component); "
+        "optional boundary interpolation at floor crossings between chunk centers.",
         ctx,
         len(hits),
         minimum_score,
@@ -189,115 +427,37 @@ def merge_chunk_hits(
         clip_min = min(clip_scores)
         clip_max = max(clip_scores)
         clip_spread = clip_max - clip_min
-        use_score_tier_split = clip_spread >= min_clip_score_spread
         logger.info(
-            "[chunk_range_merge] %sclip_id=%s timeline_walk eligible_chunks=%s "
-            "clip_score_min=%.4f clip_score_max=%.4f clip_spread=%.4f score_tier_split_active=%s",
+            "[chunk_range_merge] %sclip_id=%s timeline eligible_chunks=%s "
+            "clip_score_min=%.4f clip_score_max=%.4f clip_spread=%.4f (per-time-component spread used for merge)",
             ctx,
             clip_id,
             len(sorted_hits),
             clip_min,
             clip_max,
             clip_spread,
-            use_score_tier_split,
         )
 
-        first = sorted_hits[0]
-        range_start = first.start_time_seconds
-        range_end = first.end_time_seconds
-        local_key = first.local_key
-        file_name = first.file_name
-        modality = first.modality
-        chunk_hits = [first]
+        components = _split_time_components(sorted_hits, max_gap_seconds=max_gap_seconds)
+        logger.info(
+            "[chunk_range_merge] %sclip_id=%s time_components=%s (max_gap_seconds=%.4f)",
+            ctx,
+            clip_id,
+            len(components),
+            max_gap_seconds,
+        )
 
-        def close_range(closure: str) -> None:
-            mr = _build_merged_group(
-                clip_id=clip_id,
-                local_key=local_key,
-                file_name=file_name,
-                modality=modality,
-                start_time_seconds=range_start,
-                end_time_seconds=range_end,
-                chunk_hits=chunk_hits,
-            )
-            merged.append(mr)
-            _log_merged_range(
-                mr,
-                chunk_hits,
-                project_id=project_id,
-                range_closure=closure,
-            )
-
-        for current in sorted_hits[1:]:
-            gap = current.start_time_seconds - range_end
-            if gap > max_gap_seconds:
-                logger.debug(
-                    "[chunk_range_merge] %sclip_id=%s split_range: gap=%.4fs > max_gap=%.4fs "
-                    "flush current range; next range starts at chunk_idx=%s",
-                    ctx,
-                    clip_id,
-                    gap,
-                    max_gap_seconds,
-                    current.chunk_index,
+        for comp in components:
+            merged.extend(
+                _merge_time_component(
+                    comp,
+                    clip_id=clip_id,
+                    max_normalized_drop_vs_clip_spread=max_normalized_drop_vs_clip_spread,
+                    min_clip_score_spread=min_clip_score_spread,
+                    project_id=project_id,
+                    ctx=ctx,
                 )
-                close_range("time_gap_exceeded")
-                range_start = current.start_time_seconds
-                range_end = current.end_time_seconds
-                local_key = current.local_key
-                file_name = current.file_name
-                modality = current.modality
-                chunk_hits = [current]
-                continue
-
-            range_peak = max(h.score for h in chunk_hits)
-            if clip_spread > 0 and use_score_tier_split:
-                normalized_drop = (range_peak - current.score) / clip_spread
-                too_weak_vs_peak = normalized_drop > max_normalized_drop_vs_clip_spread
-            else:
-                normalized_drop = 0.0
-                too_weak_vs_peak = False
-
-            if too_weak_vs_peak:
-                logger.debug(
-                    "[chunk_range_merge] %sclip_id=%s split_range: normalized_drop_vs_clip_spread "
-                    "range_peak=%.4f current=%.4f clip_spread=%.4f normalized_drop=%.4f "
-                    "max_allowed=%.4f next chunk_idx=%s",
-                    ctx,
-                    clip_id,
-                    range_peak,
-                    current.score,
-                    clip_spread,
-                    normalized_drop,
-                    max_normalized_drop_vs_clip_spread,
-                    current.chunk_index,
-                )
-                close_range("normalized_score_drop_vs_clip_spread")
-                range_start = current.start_time_seconds
-                range_end = current.end_time_seconds
-                local_key = current.local_key
-                file_name = current.file_name
-                modality = current.modality
-                chunk_hits = [current]
-                continue
-
-            logger.debug(
-                "[chunk_range_merge] %sclip_id=%s extend_range: gap=%.4fs <= max_gap=%.4fs "
-                "append chunk_idx=%s score=%.4f range_peak=%.4f normalized_drop=%.4f "
-                "score_tier_split=%s",
-                ctx,
-                clip_id,
-                gap,
-                max_gap_seconds,
-                current.chunk_index,
-                current.score,
-                range_peak,
-                normalized_drop,
-                use_score_tier_split,
             )
-            range_end = max(range_end, current.end_time_seconds)
-            chunk_hits.append(current)
-
-        close_range("end_of_sorted_hits")
 
     merged.sort(key=lambda m: m.confidence, reverse=True)
     logger.info(
