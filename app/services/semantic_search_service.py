@@ -8,10 +8,39 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import clip_embedding_store, gemini_embedding
-from app.services.semantic_constants import CHUNK_TOP_K, RESULTS_LIMIT
-from app.services.semantic_range_merge import ChunkHit, merge_chunk_hits
+from app.services.semantic_constants import (
+    CHUNK_TOP_K,
+    RESULTS_LIMIT,
+    SEMANTIC_SEARCH_MIN_MATCH_CONFIDENCE_RATIO_AFTER_TOP,
+)
+from app.services.semantic_range_merge import ChunkHit, MergedRange, merge_chunk_hits
 
 logger = logging.getLogger(__name__)
+
+
+def _select_top_matches_by_confidence_ratio(
+    merged: list[MergedRange],
+    *,
+    limit: int,
+    min_ratio_after_top: float = SEMANTIC_SEARCH_MIN_MATCH_CONFIDENCE_RATIO_AFTER_TOP,
+) -> list[MergedRange]:
+    """Keep the top match, then only near-top matches by final confidence ratio."""
+    if limit <= 0 or not merged:
+        return []
+
+    top = merged[0]
+    selected = [top]
+    if top.confidence <= 0:
+        return selected[:limit]
+
+    for candidate in merged[1:]:
+        ratio = candidate.confidence / top.confidence
+        if ratio > min_ratio_after_top:
+            selected.append(candidate)
+            if len(selected) >= limit:
+                break
+
+    return selected
 
 
 async def search_project_semantic(
@@ -76,7 +105,7 @@ async def search_project_semantic(
     ]
 
     merged = merge_chunk_hits(hits, project_id=project_id)
-    top = merged[:lim]
+    top = _select_top_matches_by_confidence_ratio(merged, limit=lim)
 
     matches: list[dict[str, Any]] = []
     for m in top:
@@ -93,11 +122,13 @@ async def search_project_semantic(
         )
 
     logger.info(
-        "[semantic_search] project_id=%s raw_nn_hits=%s merged_ranges=%s returned_matches=%s",
+        "[semantic_search] project_id=%s raw_nn_hits=%s merged_ranges=%s returned_matches=%s "
+        "min_match_confidence_ratio_after_top=%.4f",
         project_id,
         len(rows),
         len(merged),
         len(matches),
+        SEMANTIC_SEARCH_MIN_MATCH_CONFIDENCE_RATIO_AFTER_TOP,
     )
     if matches:
         first = matches[0]
