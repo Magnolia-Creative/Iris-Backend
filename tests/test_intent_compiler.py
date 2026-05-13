@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 import main
 from app.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
-from app.intent_compiler.compiler import IntentCompiler
+from app.intent_compiler.compiler import IntentCompiler, action_execution_tier
 from app.intent_compiler.llm import (
     IntentCompilerService,
     IntentLLMCompiler,
@@ -282,10 +282,13 @@ def test_mixed_structural_and_effect_plan_emits_both_actions():
         context=context,
     )
 
-    action_types = [action.type.value for action in result.actions]
-    assert "SPLIT_CLIP" in action_types
-    assert "UPDATE_EFFECT_PARAMS" in action_types
-    update_action = next(action for action in result.actions if action.type.value == "UPDATE_EFFECT_PARAMS")
+    assert len(result.actions) == 2
+    assert result.actions[0].type.value == "UPDATE_EFFECT_PARAMS"
+    assert result.actions[1].type.value == "SPLIT_CLIP"
+    tiers = [action_execution_tier(action.type) for action in result.actions]
+    assert tiers == sorted(tiers)
+
+    update_action = result.actions[0]
     assert update_action.payload == {
         "updateClipColorFilter": {
             "clipId": "clip-b",

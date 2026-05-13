@@ -39,6 +39,31 @@ _EFFECT_OPERATION_TO_PATCH_KEY: dict[str, str] = {
     "setHighlights": "highlights",
     "setShadows": "shadows",
 }
+
+# Client execution order: lower tier runs first. Color / effect-parameter actions
+# run before clip-sequence edits so grading applies to the pre-split layout the
+# user sees. Structural ops are still *resolved* in plan order (simulator
+# mutates) for clarification and dependent resolution; emitted actions merge
+# with color first.
+_ACTION_EXECUTION_TIER: dict[ActionType, int] = {
+    ActionType.updateEffectParams: 0,
+    ActionType.applyEffect: 0,
+    ActionType.removeEffect: 0,
+    ActionType.addClip: 1,
+    ActionType.removeClip: 1,
+    ActionType.trimClip: 1,
+    ActionType.removeClipRanges: 1,
+    ActionType.splitClip: 1,
+    ActionType.moveClip: 1,
+    ActionType.replaceTrackClips: 1,
+}
+
+
+def action_execution_tier(action_type: ActionType) -> int:
+    """Lower tier runs first on the client (color before clip topology)."""
+    return _ACTION_EXECUTION_TIER.get(action_type, 99)
+
+
 from app.intent_compiler.transcript_phrases import transcript_operation_wants_phrase_fallback
 
 
@@ -242,8 +267,8 @@ class IntentCompiler:
         simulator = IntentTimelineSimulator(context)
         previous_clip_id: str | None = None
         previous_track_id: str | None = None
-        actions: list[Action] = []
-        confidences: list[float] = []
+        structural_actions: list[Action] = []
+        structural_confidences: list[float] = []
         warnings: list[IntentCompileWarning] = []
 
         for operation in plan.operations:
@@ -260,8 +285,8 @@ class IntentCompiler:
                 if action is None:
                     warnings.append(IntentCompileWarning.unsupportedIntent)
                     continue
-                actions.append(action)
-                confidences.append(resolved.operation.confidence)
+                structural_actions.append(action)
+                structural_confidences.append(resolved.operation.confidence)
                 simulator.apply(resolved.operation)
                 previous_clip_id = resolved.operation.targetClipId or previous_clip_id
                 previous_track_id = resolved.operation.targetTrackId or previous_track_id
@@ -275,15 +300,20 @@ class IntentCompiler:
             else:
                 warnings.append(IntentCompileWarning.unsupportedIntent)
 
+        # Resolve color against the initial timeline so ordinals/playhead match
+        # pre-structure topology; anchor first effect `sameAsPrevious` to the
+        # last resolved structural clip id when present.
+        effect_simulator = IntentTimelineSimulator(context)
         effect_actions, effect_confidences, effect_warnings = self._compile_effect_actions(
             plan.experimentalEffectOperations,
             context=context,
-            simulator=simulator,
+            simulator=effect_simulator,
             previous_clip_id=previous_clip_id,
         )
-        actions.extend(effect_actions)
-        confidences.extend(effect_confidences)
         warnings.extend(effect_warnings)
+
+        actions = effect_actions + structural_actions
+        confidences = effect_confidences + structural_confidences
 
         if not actions:
             return IntentCompileResult(
