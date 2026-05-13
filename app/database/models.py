@@ -1,8 +1,10 @@
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, Numeric, Text, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -111,6 +113,19 @@ class Transcript(Base):
     )
 
     clip: Mapped["Clip"] = relationship(back_populates="transcript")
+
+
+class SentenceUploadTranscript(Base):
+    """Standalone sentence-level transcription rows (no clip), e.g. POST /transcriptions/sentences."""
+
+    __tablename__ = "sentence_upload_transcripts"
+    __table_args__ = (Index("idx_sentence_upload_transcripts_created_at", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class Summary(Base):

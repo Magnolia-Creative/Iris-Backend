@@ -26,6 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
+from app.services.transcript_store import insert_sentence_upload_transcript
 from app.automake.runtime import (
     approve_session_timeline,
     get_session_state,
@@ -184,7 +185,10 @@ async def db_health(db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/transcriptions/sentences")
-async def create_sentence_transcription(audio: UploadFile = File(...)):
+async def create_sentence_transcription(
+    audio: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Audio upload was empty.")
@@ -194,9 +198,16 @@ async def create_sentence_transcription(audio: UploadFile = File(...)):
         suffix = f".{audio.filename.rsplit('.', 1)[-1]}"
 
     result = await transcribe_upload_to_sentences(audio_bytes, suffix=suffix or ".m4a")
+    provider_transcript_id = result.get("transcript_id")
+    db_transcript_id = await insert_sentence_upload_transcript(db, result)
+    result["transcript_id"] = db_transcript_id
+    meta = result.get("meta")
+    meta_out = dict(meta) if isinstance(meta, dict) else {}
+    meta_out["provider_transcript_id"] = provider_transcript_id
+    result["meta"] = meta_out
     print_received_transcript(
         source="main_endpoint",
-        transcript_id=result.get("transcript_id"),
+        transcript_id=db_transcript_id,
         full_text=result.get("full_text"),
         segments=result.get("sentences"),
     )

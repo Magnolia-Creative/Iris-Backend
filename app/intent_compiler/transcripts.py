@@ -17,7 +17,10 @@ from app.intent_compiler.transcript_preflight import (
     resolve_transcript_target_clip_ids,
 )
 from app.services.transcript_cache import cache_transcript, get_cached_transcript
-from app.services.transcript_store import get_transcript_payload
+from app.services.transcript_store import (
+    get_sentence_upload_transcript_payload,
+    get_transcript_payload,
+)
 
 
 async def hydrate_intent_transcript_context(
@@ -37,6 +40,13 @@ async def hydrate_intent_transcript_context(
         transcript_id = _int_transcript_id(transcript_ref.transcriptId)
         if payload is None and transcript_id is not None:
             payload = await get_transcript_payload(db, transcript_id)
+            if payload is not None:
+                cache_key = await cache_transcript(_cache_session_id(context), clip_id, payload)
+
+        if payload is None and transcript_ref.transcriptId is not None and transcript_id is None:
+            payload = await get_sentence_upload_transcript_payload(
+                db, str(transcript_ref.transcriptId).strip()
+            )
             if payload is not None:
                 cache_key = await cache_transcript(_cache_session_id(context), clip_id, payload)
 

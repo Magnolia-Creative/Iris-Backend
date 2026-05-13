@@ -495,6 +495,66 @@ def test_hydrate_intent_transcript_context_reads_sql_and_caches(monkeypatch):
     assert transcript.pauseRanges[0].startUs == 1_300_000
 
 
+def test_hydrate_intent_transcript_context_loads_sentence_upload_uuid(monkeypatch):
+    uid = "aaaaaaaa-bbbb-4ccc-a123-456789abcdef"
+    calls: dict[str, object] = {}
+
+    async def fake_get_cached_transcript(cache_key):
+        calls["cache_key"] = cache_key
+        return None
+
+    async def fake_get_transcript_payload(_db, transcript_id):
+        calls["clip_lookup"] = transcript_id
+        return None
+
+    async def fake_get_sentence_upload(_db, transcript_id):
+        calls["sentence_lookup"] = transcript_id
+        return {
+            "full_text": "Hi there",
+            "segments": [
+                {
+                    "text": "Hi there",
+                    "words": [
+                        {"word": "Hi", "start": 0.0, "end": 0.2},
+                        {"word": "there", "start": 0.25, "end": 0.5},
+                    ],
+                }
+            ],
+        }
+
+    async def fake_cache_transcript(session_id, clip_id, transcript_payload):
+        calls["cache"] = (session_id, clip_id, transcript_payload["full_text"])
+        return f"session:{session_id}:transcript:{clip_id}"
+
+    monkeypatch.setattr("app.intent_compiler.transcripts.get_cached_transcript", fake_get_cached_transcript)
+    monkeypatch.setattr("app.intent_compiler.transcripts.get_transcript_payload", fake_get_transcript_payload)
+    monkeypatch.setattr(
+        "app.intent_compiler.transcripts.get_sentence_upload_transcript_payload",
+        fake_get_sentence_upload,
+    )
+    monkeypatch.setattr("app.intent_compiler.transcripts.cache_transcript", fake_cache_transcript)
+
+    context = IntentCompilerContext.model_validate(
+        {
+            **_sample_context(),
+            "sessionId": "session-1",
+            "transcriptContextsByClipId": {
+                "clip-b": {"clipId": "clip-b", "transcriptId": uid, "cacheKey": "missing-cache"}
+            },
+        }
+    )
+
+    hydrated = asyncio.run(hydrate_intent_transcript_context(context, object()))
+
+    transcript = hydrated.transcriptContextsByClipId["clip-b"]
+    assert "clip_lookup" not in calls
+    assert calls["sentence_lookup"] == uid
+    assert calls["cache"] == ("session-1", "clip-b", "Hi there")
+    assert transcript.cacheKey == "session:session-1:transcript:clip-b"
+    assert transcript.words[0].word == "Hi"
+    assert transcript.words[1].word == "there"
+
+
 def test_effect_parameters_are_clamped_to_capability_schema():
     capability = DEFAULT_EFFECT_CAPABILITIES[0]
     operation = ExperimentalEffectOperation(

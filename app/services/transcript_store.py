@@ -1,3 +1,4 @@
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -6,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import models
 from app.services.clip_task_registry import clip_task_registry
+from app.services.sentence_transcript_payload import intent_jsonb_from_sentence_api_result
 
 
 async def get_transcript_payload(
@@ -18,6 +20,32 @@ async def get_transcript_payload(
     if transcript is None or not isinstance(transcript.transcript, dict):
         return None
     return transcript.transcript
+
+
+async def get_sentence_upload_transcript_payload(
+    db: AsyncSession, transcript_id: str
+) -> dict[str, Any] | None:
+    try:
+        uid = uuid.UUID(str(transcript_id).strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
+    result = await db.execute(
+        select(models.SentenceUploadTranscript).where(models.SentenceUploadTranscript.id == uid)
+    )
+    row = result.scalar_one_or_none()
+    if row is None or not isinstance(row.transcript, dict):
+        return None
+    return row.transcript
+
+
+async def insert_sentence_upload_transcript(db: AsyncSession, result: dict[str, Any]) -> str:
+    payload = intent_jsonb_from_sentence_api_result(result)
+    row = models.SentenceUploadTranscript(transcript=payload)
+    db.add(row)
+    await db.flush()
+    out_id = str(row.id)
+    await db.commit()
+    return out_id
 
 
 async def get_transcripts_for_clips(

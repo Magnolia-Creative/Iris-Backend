@@ -40,13 +40,19 @@ def test_create_sentence_transcription_route(monkeypatch):
             "meta": {"provider": "modal"},
         }
 
+    async def fake_insert_sentence_upload(_db, result):
+        assert result["full_text"] == "Hello world."
+        return "aaaaaaaa-bbbb-4ccc-a123-456789abcdef"
+
     def fake_print(*args, **kwargs):
         printed_lines.append(" ".join(str(arg) for arg in args))
 
     monkeypatch.setattr(main, "transcribe_upload_to_sentences", fake_transcribe_upload_to_sentences)
+    monkeypatch.setattr(main, "insert_sentence_upload_transcript", fake_insert_sentence_upload)
     monkeypatch.setattr("builtins.print", fake_print)
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
+    main.app.dependency_overrides[get_db] = _fake_db
 
     try:
         with TestClient(main.app) as client:
@@ -56,10 +62,12 @@ def test_create_sentence_transcription_route(monkeypatch):
             )
     finally:
         main.app.router.lifespan_context = original_lifespan
+        main.app.dependency_overrides.clear()
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["transcript_id"] == "tr-123"
+    assert payload["transcript_id"] == "aaaaaaaa-bbbb-4ccc-a123-456789abcdef"
+    assert payload["meta"]["provider_transcript_id"] == "tr-123"
     assert payload["full_text"] == "Hello world."
     assert payload["sentences"][0]["text"] == "Hello world."
     assert payload["meta"]["provider"] == "modal"
