@@ -13,4 +13,7 @@ RANGE_MERGE_MIN_CLIP_SCORE_SPREAD = 0.08
 # If (range_peak - next_chunk_score) / clip_score_spread exceeds this, start a new range.
 # Scale-free within each clip: adapts when similarities are compressed (e.g. all high) vs wide.
 RANGE_MERGE_MAX_NORMALIZED_DROP = 0.35
+# After the first chunk in a merged span (time order), each next chunk is kept only while
+# its score divided by the first chunk's score stays strictly above this ratio (weak tails drop off).
+RANGE_MERGE_MIN_SCORE_RATIO_AFTER_FIRST_CHUNK = 0.92
 RESULTS_LIMIT = 3

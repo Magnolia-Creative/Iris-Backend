@@ -146,3 +146,16 @@ def test_waving_flag_like_scores_peak_island_top_ranked():
     assert top.end_time_seconds <= 17.0
     assert top.end_time_seconds - top.start_time_seconds < 11.0
     assert top.confidence >= 0.58
+
+
+def test_score_ratio_tail_truncates_after_first_chunk_vs_anchor():
+    """Later chunks are omitted when score / first-chunk-score is not strictly above 0.92."""
+    hits = [
+        _hit(1, 0, 0.0, 4.0, 0.65),
+        _hit(1, 1, 3.5, 7.5, 0.62),
+        _hit(1, 2, 7.0, 11.0, 0.52),
+    ]
+    merged = merge_chunk_hits(hits)
+    best = max(merged, key=lambda m: m.confidence)
+    assert 0.52 / 0.65 < 0.92
+    assert best.end_time_seconds <= 7.5 + 1e-9

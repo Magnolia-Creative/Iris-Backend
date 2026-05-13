@@ -17,6 +17,7 @@ from app.services.semantic_constants import (
     RANGE_MERGE_GAP_SECONDS,
     RANGE_MERGE_MAX_NORMALIZED_DROP,
     RANGE_MERGE_MIN_CLIP_SCORE_SPREAD,
+    RANGE_MERGE_MIN_SCORE_RATIO_AFTER_FIRST_CHUNK,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,30 @@ def _refine_island_wall_times(
     return start_t, end_t
 
 
+def _prune_tail_by_score_ratio_to_first_chunk(
+    seg_hits: list[ChunkHit],
+    *,
+    min_ratio: float,
+) -> list[ChunkHit]:
+    """Keep the first chunk (by start time), then only further chunks while score/first > min_ratio.
+
+    On first failure, omit that chunk and all later chunks in this segment (truncate the tail).
+    """
+    if len(seg_hits) <= 1:
+        return seg_hits
+    ordered = sorted(seg_hits, key=lambda h: h.start_time_seconds)
+    anchor = ordered[0].score
+    if anchor <= _SCORE_INTERP_EPS:
+        return ordered
+    out: list[ChunkHit] = [ordered[0]]
+    for h in ordered[1:]:
+        if h.score / anchor > min_ratio:
+            out.append(h)
+        else:
+            break
+    return out
+
+
 def _segment_by_score_floor(
     component: list[ChunkHit],
     *,
@@ -242,6 +267,7 @@ def _merge_time_component(
     clip_id: int,
     max_normalized_drop_vs_clip_spread: float,
     min_clip_score_spread: float,
+    min_score_ratio_after_first_chunk: float,
     project_id: int | None,
     ctx: str,
 ) -> list[MergedRange]:
@@ -272,8 +298,12 @@ def _merge_time_component(
     out: list[MergedRange] = []
 
     if not use_peak_floor:
-        rs = min(h.start_time_seconds for h in component)
-        re = max(h.end_time_seconds for h in component)
+        pruned = _prune_tail_by_score_ratio_to_first_chunk(
+            component,
+            min_ratio=min_score_ratio_after_first_chunk,
+        )
+        rs = min(h.start_time_seconds for h in pruned)
+        re = max(h.end_time_seconds for h in pruned)
         mr = _build_merged_group(
             clip_id=clip_id,
             local_key=local_key,
@@ -281,12 +311,12 @@ def _merge_time_component(
             modality=modality,
             start_time_seconds=rs,
             end_time_seconds=re,
-            chunk_hits=component,
+            chunk_hits=pruned,
         )
         out.append(mr)
         _log_merged_range(
             mr,
-            component,
+            pruned,
             project_id=project_id,
             range_closure="component_low_spread_merge",
         )
@@ -324,17 +354,23 @@ def _merge_time_component(
         return out
 
     for kind, seg_hits in segments:
+        pruned = _prune_tail_by_score_ratio_to_first_chunk(
+            seg_hits,
+            min_ratio=min_score_ratio_after_first_chunk,
+        )
         if kind == "high":
-            rs, re = _refine_island_wall_times(component, seg_hits, floor)
+            rs, re = _refine_island_wall_times(component, pruned, floor)
             closure = "peak_relative_floor_island"
-            if rs != min(h.start_time_seconds for h in seg_hits) or re != max(
-                h.end_time_seconds for h in seg_hits
+            if rs != min(h.start_time_seconds for h in pruned) or re != max(
+                h.end_time_seconds for h in pruned
             ):
                 closure = "peak_relative_floor_island_interpolated"
         else:
-            rs = min(h.start_time_seconds for h in seg_hits)
-            re = max(h.end_time_seconds for h in seg_hits)
+            rs = min(h.start_time_seconds for h in pruned)
+            re = max(h.end_time_seconds for h in pruned)
             closure = "below_peak_floor_segment"
+        if len(pruned) < len(seg_hits):
+            closure = f"{closure}_ratio_tail_pruned"
         mr = _build_merged_group(
             clip_id=clip_id,
             local_key=local_key,
@@ -342,10 +378,10 @@ def _merge_time_component(
             modality=modality,
             start_time_seconds=rs,
             end_time_seconds=re,
-            chunk_hits=seg_hits,
+            chunk_hits=pruned,
         )
         out.append(mr)
-        _log_merged_range(mr, seg_hits, project_id=project_id, range_closure=closure)
+        _log_merged_range(mr, pruned, project_id=project_id, range_closure=closure)
 
     return out
 
@@ -357,6 +393,7 @@ def merge_chunk_hits(
     minimum_score: float = CHUNK_MERGE_MINIMUM_SCORE,
     max_normalized_drop_vs_clip_spread: float = RANGE_MERGE_MAX_NORMALIZED_DROP,
     min_clip_score_spread: float = RANGE_MERGE_MIN_CLIP_SCORE_SPREAD,
+    min_score_ratio_after_first_chunk: float = RANGE_MERGE_MIN_SCORE_RATIO_AFTER_FIRST_CHUNK,
     dedupe_by_chunk_index: bool = True,
     project_id: int | None = None,
 ) -> list[MergedRange]:
@@ -364,10 +401,11 @@ def merge_chunk_hits(
     logger.info(
         "[chunk_range_merge] %sstart raw_hits=%s thresholds: minimum_score=%.4f (drop at <=) "
         "max_gap_seconds=%.4f min_clip_score_spread=%.4f max_normalized_drop_vs_clip_spread=%.4f "
-        "dedupe_by_chunk_index=%s - per clip: dedupe, sort by time, split by time gap; "
-        "within each time component, if comp_spread >= min_clip_score_spread, keep contiguous "
-        "chunks with score >= peak - comp_spread * max_normalized_drop (else merge whole component); "
-        "optional boundary interpolation at floor crossings between chunk centers.",
+        "dedupe_by_chunk_index=%s min_score_ratio_after_first_chunk=%.4f (strict >) - per clip: dedupe, "
+        "sort by time, split by time gap; within each time component, if comp_spread >= min_clip_score_spread, "
+        "keep contiguous chunks with score >= peak - comp_spread * max_normalized_drop (else merge whole "
+        "component); optional boundary interpolation at floor crossings; then drop tail chunks whose score "
+        "divided by the segment's first chunk (time order) is not strictly above min_score_ratio_after_first_chunk.",
         ctx,
         len(hits),
         minimum_score,
@@ -375,6 +413,7 @@ def merge_chunk_hits(
         min_clip_score_spread,
         max_normalized_drop_vs_clip_spread,
         dedupe_by_chunk_index,
+        min_score_ratio_after_first_chunk,
     )
 
     eligible = [h for h in hits if h.score > minimum_score]
@@ -454,6 +493,7 @@ def merge_chunk_hits(
                     clip_id=clip_id,
                     max_normalized_drop_vs_clip_spread=max_normalized_drop_vs_clip_spread,
                     min_clip_score_spread=min_clip_score_spread,
+                    min_score_ratio_after_first_chunk=min_score_ratio_after_first_chunk,
                     project_id=project_id,
                     ctx=ctx,
                 )
