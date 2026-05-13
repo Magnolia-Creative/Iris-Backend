@@ -90,14 +90,33 @@ def test_ratio_drop_triggers_split_high_peak():
     assert len(merged) == 2
 
 
-def test_custom_thresholds_allow_merge():
+def test_low_clip_spread_skips_score_tier_split():
+    """Narrow NN band: spread below floor so only time-gap rules apply."""
+    hits = [
+        _hit(1, 0, 0.0, 4.0, 0.72),
+        _hit(1, 1, 3.5, 7.5, 0.68),
+    ]
+    merged = merge_chunk_hits(hits)
+    assert len(merged) == 1
+
+
+def test_identical_scores_merge_when_time_gap_ok():
+    hits = [
+        _hit(1, 0, 0.0, 4.0, 0.55),
+        _hit(1, 1, 3.5, 7.5, 0.55),
+        _hit(1, 2, 7.0, 11.0, 0.55),
+    ]
+    merged = merge_chunk_hits(hits)
+    assert len(merged) == 1
+
+
+def test_custom_normalized_threshold_allows_merge():
     hits = [
         _hit(1, 0, 0.0, 4.0, 0.80),
         _hit(1, 1, 3.5, 7.5, 0.69),
     ]
     merged = merge_chunk_hits(
         hits,
-        max_score_drop_from_peak=0.20,
-        min_score_ratio_of_peak=0.80,
+        max_normalized_drop_vs_clip_spread=1.05,
     )
     assert len(merged) == 1

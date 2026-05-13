@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from app.services.semantic_constants import (
     CHUNK_MERGE_MINIMUM_SCORE,
     RANGE_MERGE_GAP_SECONDS,
-    RANGE_MERGE_MAX_SCORE_DROP_FROM_PEAK,
-    RANGE_MERGE_MIN_SCORE_RATIO_OF_PEAK,
+    RANGE_MERGE_MAX_NORMALIZED_DROP,
+    RANGE_MERGE_MIN_CLIP_SCORE_SPREAD,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,24 +118,24 @@ def merge_chunk_hits(
     *,
     max_gap_seconds: float = RANGE_MERGE_GAP_SECONDS,
     minimum_score: float = CHUNK_MERGE_MINIMUM_SCORE,
-    max_score_drop_from_peak: float = RANGE_MERGE_MAX_SCORE_DROP_FROM_PEAK,
-    min_score_ratio_of_peak: float = RANGE_MERGE_MIN_SCORE_RATIO_OF_PEAK,
+    max_normalized_drop_vs_clip_spread: float = RANGE_MERGE_MAX_NORMALIZED_DROP,
+    min_clip_score_spread: float = RANGE_MERGE_MIN_CLIP_SCORE_SPREAD,
     dedupe_by_chunk_index: bool = True,
     project_id: int | None = None,
 ) -> list[MergedRange]:
     ctx = f"project_id={project_id} " if project_id is not None else ""
     logger.info(
         "[chunk_range_merge] %sstart raw_hits=%s thresholds: minimum_score=%.4f (drop at <=) "
-        "max_gap_seconds=%.4f max_score_drop_from_peak=%.4f min_score_ratio_of_peak=%.4f "
-        "dedupe_by_chunk_index=%s - per clip: dedupe duplicate chunk_index rows, sort by time, "
-        "extend a range while (next.start - range_end) <= max_gap AND the next chunk is not much "
-        "weaker than the current range peak (ratio and absolute drop); else start a new range.",
+        "max_gap_seconds=%.4f min_clip_score_spread=%.4f max_normalized_drop_vs_clip_spread=%.4f "
+        "dedupe_by_chunk_index=%s - per clip: dedupe, sort by time, extend while time gap ok; "
+        "if clip score spread (max-min) >= min_clip_score_spread, also split when "
+        "(range_peak - next_score) / spread > max_normalized_drop (else score-tier split off).",
         ctx,
         len(hits),
         minimum_score,
         max_gap_seconds,
-        max_score_drop_from_peak,
-        min_score_ratio_of_peak,
+        min_clip_score_spread,
+        max_normalized_drop_vs_clip_spread,
         dedupe_by_chunk_index,
     )
 
@@ -185,12 +185,21 @@ def merge_chunk_hits(
         if not sorted_hits:
             continue
 
+        clip_scores = [h.score for h in sorted_hits]
+        clip_min = min(clip_scores)
+        clip_max = max(clip_scores)
+        clip_spread = clip_max - clip_min
+        use_score_tier_split = clip_spread >= min_clip_score_spread
         logger.info(
             "[chunk_range_merge] %sclip_id=%s timeline_walk eligible_chunks=%s "
-            "(sorted by start_time; embedding scores each chunk vs query)",
+            "clip_score_min=%.4f clip_score_max=%.4f clip_spread=%.4f score_tier_split_active=%s",
             ctx,
             clip_id,
             len(sorted_hits),
+            clip_min,
+            clip_max,
+            clip_spread,
+            use_score_tier_split,
         )
 
         first = sorted_hits[0]
@@ -241,23 +250,28 @@ def merge_chunk_hits(
                 continue
 
             range_peak = max(h.score for h in chunk_hits)
-            too_weak_vs_peak = current.score < (range_peak * min_score_ratio_of_peak) or (
-                (range_peak - current.score) > max_score_drop_from_peak
-            )
+            if clip_spread > 0 and use_score_tier_split:
+                normalized_drop = (range_peak - current.score) / clip_spread
+                too_weak_vs_peak = normalized_drop > max_normalized_drop_vs_clip_spread
+            else:
+                normalized_drop = 0.0
+                too_weak_vs_peak = False
+
             if too_weak_vs_peak:
                 logger.debug(
-                    "[chunk_range_merge] %sclip_id=%s split_range: score_drop_vs_peak "
-                    "range_peak=%.4f current=%.4f min_ratio_of_peak=%.4f max_drop=%.4f "
-                    "next chunk_idx=%s",
+                    "[chunk_range_merge] %sclip_id=%s split_range: normalized_drop_vs_clip_spread "
+                    "range_peak=%.4f current=%.4f clip_spread=%.4f normalized_drop=%.4f "
+                    "max_allowed=%.4f next chunk_idx=%s",
                     ctx,
                     clip_id,
                     range_peak,
                     current.score,
-                    min_score_ratio_of_peak,
-                    max_score_drop_from_peak,
+                    clip_spread,
+                    normalized_drop,
+                    max_normalized_drop_vs_clip_spread,
                     current.chunk_index,
                 )
-                close_range("score_drop_vs_range_peak")
+                close_range("normalized_score_drop_vs_clip_spread")
                 range_start = current.start_time_seconds
                 range_end = current.end_time_seconds
                 local_key = current.local_key
@@ -268,7 +282,8 @@ def merge_chunk_hits(
 
             logger.debug(
                 "[chunk_range_merge] %sclip_id=%s extend_range: gap=%.4fs <= max_gap=%.4fs "
-                "append chunk_idx=%s score=%.4f range_peak=%.4f",
+                "append chunk_idx=%s score=%.4f range_peak=%.4f normalized_drop=%.4f "
+                "score_tier_split=%s",
                 ctx,
                 clip_id,
                 gap,
@@ -276,6 +291,8 @@ def merge_chunk_hits(
                 current.chunk_index,
                 current.score,
                 range_peak,
+                normalized_drop,
+                use_score_tier_split,
             )
             range_end = max(range_end, current.end_time_seconds)
             chunk_hits.append(current)
