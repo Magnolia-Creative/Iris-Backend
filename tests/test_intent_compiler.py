@@ -122,6 +122,178 @@ def test_effect_only_plan_preserves_experimental_effects_without_actions():
     assert IntentCompileWarning.unsupportedAction in result.warnings
 
 
+def test_color_filter_effect_plan_emits_update_clip_color_filter_action():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[],
+        experimentalEffectOperations=[
+            ExperimentalEffectOperation(
+                operation="setTemperature",
+                sourceText="make it warmer",
+                target={"type": "selectedClip"},
+                confidence=0.9,
+                parameters={"value": 0.4},
+            )
+        ],
+        needsClarification=False,
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="make it warmer",
+        context=context,
+    )
+
+    assert len(result.actions) == 1
+    action = result.actions[0]
+    assert action.type.value == "UPDATE_EFFECT_PARAMS"
+    assert action.payload == {
+        "updateClipColorFilter": {
+            "clipId": "clip-b",
+            "adjustments": {"temperature": 0.4},
+        }
+    }
+    assert result.needsClarification is False
+    assert IntentCompileWarning.unsupportedAction not in result.warnings
+
+
+def test_color_filter_effect_groups_multiple_operations_per_clip():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[],
+        experimentalEffectOperations=[
+            ExperimentalEffectOperation(
+                operation="setTemperature",
+                sourceText="warmer and more saturated",
+                target={"type": "selectedClip"},
+                confidence=0.9,
+                parameters={"value": 0.3},
+            ),
+            ExperimentalEffectOperation(
+                operation="setSaturation",
+                sourceText="warmer and more saturated",
+                target={"type": "selectedClip"},
+                confidence=0.85,
+                parameters={"value": 0.2},
+            ),
+        ],
+        needsClarification=False,
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="warmer and more saturated",
+        context=context,
+    )
+
+    assert len(result.actions) == 1
+    assert result.actions[0].payload == {
+        "updateClipColorFilter": {
+            "clipId": "clip-b",
+            "adjustments": {"temperature": 0.3, "saturation": 0.2},
+        }
+    }
+
+
+def test_unsupported_effect_operations_still_emit_warning():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[],
+        experimentalEffectOperations=[
+            ExperimentalEffectOperation(
+                operation="addGrain",
+                sourceText="make it grainy",
+                target={"type": "selectedClip"},
+                confidence=0.7,
+                parameters={"amount": 0.3},
+            )
+        ],
+        needsClarification=False,
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="make it grainy",
+        context=context,
+    )
+
+    assert result.actions == []
+    assert IntentCompileWarning.unsupportedAction in result.warnings
+
+
+def test_color_filter_effect_with_unresolved_target_clarifies():
+    context_payload = {
+        **_sample_context(),
+        "selectedClipId": None,
+        "playheadTimeUs": None,
+    }
+    context = IntentCompilerContext.model_validate(context_payload)
+    plan = SemanticEditPlan(
+        operations=[],
+        experimentalEffectOperations=[
+            ExperimentalEffectOperation(
+                operation="setTemperature",
+                sourceText="make it warmer",
+                target=None,
+                confidence=0.8,
+                parameters={"value": 0.3},
+            )
+        ],
+        needsClarification=False,
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="make it warmer",
+        context=context,
+    )
+
+    assert result.actions == []
+    assert IntentCompileWarning.missingSelectedClip in result.warnings
+
+
+def test_mixed_structural_and_effect_plan_emits_both_actions():
+    context = IntentCompilerContext.model_validate(_sample_context())
+    plan = SemanticEditPlan(
+        operations=[
+            SemanticEditOperation(
+                type=IntentEditType.splitClip,
+                sourceText="split this clip in half",
+                target={"type": "selectedClip"},
+                parameters={"position": {"type": "fractionOfClip", "value": 0.5}},
+                confidence=0.9,
+            )
+        ],
+        experimentalEffectOperations=[
+            ExperimentalEffectOperation(
+                operation="setSaturation",
+                sourceText="and make it pop",
+                target={"type": "selectedClip"},
+                confidence=0.85,
+                parameters={"value": 0.5},
+            )
+        ],
+        needsClarification=False,
+    )
+
+    result = IntentCompiler().compile(
+        plan,
+        original_prompt="split this clip in half and make it pop",
+        context=context,
+    )
+
+    action_types = [action.type.value for action in result.actions]
+    assert "SPLIT_CLIP" in action_types
+    assert "UPDATE_EFFECT_PARAMS" in action_types
+    update_action = next(action for action in result.actions if action.type.value == "UPDATE_EFFECT_PARAMS")
+    assert update_action.payload == {
+        "updateClipColorFilter": {
+            "clipId": "clip-b",
+            "adjustments": {"saturation": 0.5},
+        }
+    }
+
+
 def test_dead_space_plan_emits_remove_clip_ranges_action():
     context = IntentCompilerContext.model_validate(
         {
