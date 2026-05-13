@@ -11,6 +11,7 @@ from app.intent_compiler.models import (
     ActionType,
     Clip,
     CompileSource,
+    ExperimentalEffectOperation,
     IntentCompileResult,
     IntentCompileWarning,
     IntentCompilerContext,
@@ -22,6 +23,22 @@ from app.intent_compiler.models import (
     SemanticTrackReference,
     TimeRange,
 )
+
+
+# Maps backend effect operation names to the Swift `ClipColorFilterPatch` field
+# they update. Operations not listed here are routed through the experimental
+# fallback path and produce an `unsupportedAction` warning when no real action
+# can be generated for them (e.g. `addGrain`).
+_EFFECT_OPERATION_TO_PATCH_KEY: dict[str, str] = {
+    "setTemperature": "temperature",
+    "setTint": "tint",
+    "setSaturation": "saturation",
+    "setContrast": "contrast",
+    "setExposure": "exposure",
+    "setBrightness": "brightness",
+    "setHighlights": "highlights",
+    "setShadows": "shadows",
+}
 from app.intent_compiler.transcript_phrases import transcript_operation_wants_phrase_fallback
 
 
@@ -258,8 +275,15 @@ class IntentCompiler:
             else:
                 warnings.append(IntentCompileWarning.unsupportedIntent)
 
-        if plan.experimentalEffectOperations:
-            warnings.append(IntentCompileWarning.unsupportedAction)
+        effect_actions, effect_confidences, effect_warnings = self._compile_effect_actions(
+            plan.experimentalEffectOperations,
+            context=context,
+            simulator=simulator,
+            previous_clip_id=previous_clip_id,
+        )
+        actions.extend(effect_actions)
+        confidences.extend(effect_confidences)
+        warnings.extend(effect_warnings)
 
         if not actions:
             return IntentCompileResult(
@@ -535,6 +559,79 @@ class IntentCompiler:
             return context.selectedTrackId
         return reference.trackId
 
+    def _compile_effect_actions(
+        self,
+        effect_operations: list[ExperimentalEffectOperation],
+        *,
+        context: IntentCompilerContext,
+        simulator: IntentTimelineSimulator,
+        previous_clip_id: str | None,
+    ) -> tuple[list[Action], list[float], list[IntentCompileWarning]]:
+        """Translates validated effect operations into concrete `updateClipColorFilter`
+        actions, grouping multiple parameter changes for the same clip into a
+        single payload so a "warmer and more saturated" prompt produces one
+        action per clip rather than two.
+        """
+        actions: list[Action] = []
+        confidences: list[float] = []
+        warnings: list[IntentCompileWarning] = []
+
+        # Build per-clip patches in operation order so callers can rely on a
+        # stable action ordering.
+        patches_by_clip: dict[str, dict[str, float]] = {}
+        ordered_clip_ids: list[str] = []
+        confidences_by_clip: dict[str, list[float]] = {}
+
+        cursor_clip_id = previous_clip_id
+        for operation in effect_operations:
+            patch_key = _EFFECT_OPERATION_TO_PATCH_KEY.get(operation.operation)
+            if patch_key is None:
+                warnings.append(IntentCompileWarning.unsupportedAction)
+                continue
+
+            value = _numeric_effect_parameter(operation.parameters, "value")
+            if value is None:
+                warnings.append(IntentCompileWarning.unsupportedAction)
+                continue
+
+            clip = self._resolve_clip(operation.target, context, simulator, cursor_clip_id)
+            if clip is None:
+                warnings.append(IntentCompileWarning.missingSelectedClip)
+                continue
+            cursor_clip_id = clip.clipId
+
+            if clip.clipId not in patches_by_clip:
+                patches_by_clip[clip.clipId] = {}
+                ordered_clip_ids.append(clip.clipId)
+                confidences_by_clip[clip.clipId] = []
+            patches_by_clip[clip.clipId][patch_key] = float(value)
+            confidences_by_clip[clip.clipId].append(float(operation.confidence))
+
+        created_at = _swift_reference_date_seconds()
+        for clip_id in ordered_clip_ids:
+            patch = patches_by_clip[clip_id]
+            if not patch:
+                continue
+            actions.append(
+                Action(
+                    action_id=str(uuid4()),
+                    timeline_id=context.timelineId,
+                    created_at=created_at,
+                    type=ActionType.updateEffectParams,
+                    payload={
+                        "updateClipColorFilter": {
+                            "clipId": clip_id,
+                            "adjustments": patch,
+                        }
+                    },
+                )
+            )
+            clip_confidences = confidences_by_clip[clip_id]
+            if clip_confidences:
+                confidences.append(sum(clip_confidences) / len(clip_confidences))
+
+        return actions, confidences, warnings
+
     def _make_action(self, operation: ResolvedOperation, context: IntentCompilerContext) -> Action | None:
         created_at = _swift_reference_date_seconds()
         if operation.type == IntentEditType.splitClip and operation.targetClipId:
@@ -664,6 +761,12 @@ class IntentCompiler:
             ordered = body.get("orderedClipIds") or []
             if set(existing_order) != set(ordered) or len(existing_order) != len(ordered) or len(set(ordered)) != len(ordered):
                 return [IntentCompileWarning.invalidMoveOrder]
+        for color_key in ("updateClipColorFilter", "setClipColorFilter", "resetClipColorFilter"):
+            if color_key in payload:
+                body = payload[color_key]
+                clip = context.clip(body.get("clipId"))
+                if clip is None:
+                    return [IntentCompileWarning.clipNotFound]
         return []
 
     def _success(
@@ -970,6 +1073,14 @@ def _spoken_number_value(value: str) -> float | None:
         "twelve": 12,
     }
     return numbers.get(value.lower())
+
+
+def _numeric_effect_parameter(parameters: dict[str, Any], name: str) -> float | None:
+    value = parameters.get(name)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _swift_reference_date_seconds() -> float:

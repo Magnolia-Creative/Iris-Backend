@@ -125,6 +125,9 @@ class ActionType(StrEnum):
     splitClip = "SPLIT_CLIP"
     moveClip = "MOVE_CLIP"
     replaceTrackClips = "REPLACE_TRACK_CLIPS"
+    applyEffect = "APPLY_EFFECT"
+    removeEffect = "REMOVE_EFFECT"
+    updateEffectParams = "UPDATE_EFFECT_PARAMS"
 
 
 class Action(IntentCompilerBaseModel):
