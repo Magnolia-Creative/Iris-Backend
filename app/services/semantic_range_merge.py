@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app.services.semantic_constants import CHUNK_MERGE_MINIMUM_SCORE, RANGE_MERGE_GAP_SECONDS
+from app.services.semantic_constants import (
+    CHUNK_MERGE_MINIMUM_SCORE,
+    RANGE_MERGE_GAP_SECONDS,
+    RANGE_MERGE_MAX_SCORE_DROP_FROM_PEAK,
+    RANGE_MERGE_MIN_SCORE_RATIO_OF_PEAK,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,23 +103,40 @@ def _log_merged_range(
     logger.info("[chunk_range_merge] %schunks_detail clip_id=%s | %s", ctx, mr.clip_id, chunk_bits)
 
 
+def _dedupe_hits_by_chunk_index(clip_hits: list[ChunkHit]) -> list[ChunkHit]:
+    """Keep one row per chunk_index (highest similarity), e.g. duplicate NN rows per modality."""
+    best_by_idx: dict[int, ChunkHit] = {}
+    for h in clip_hits:
+        prev = best_by_idx.get(h.chunk_index)
+        if prev is None or h.score > prev.score:
+            best_by_idx[h.chunk_index] = h
+    return list(best_by_idx.values())
+
+
 def merge_chunk_hits(
     hits: list[ChunkHit],
     *,
     max_gap_seconds: float = RANGE_MERGE_GAP_SECONDS,
     minimum_score: float = CHUNK_MERGE_MINIMUM_SCORE,
+    max_score_drop_from_peak: float = RANGE_MERGE_MAX_SCORE_DROP_FROM_PEAK,
+    min_score_ratio_of_peak: float = RANGE_MERGE_MIN_SCORE_RATIO_OF_PEAK,
+    dedupe_by_chunk_index: bool = True,
     project_id: int | None = None,
 ) -> list[MergedRange]:
     ctx = f"project_id={project_id} " if project_id is not None else ""
     logger.info(
         "[chunk_range_merge] %sstart raw_hits=%s thresholds: minimum_score=%.4f (drop at <=) "
-        "max_gap_seconds=%.4f - within each clip, walk chunks in time order and extend one range "
-        "while (next.start - range_end) <= max_gap; else start a new range. "
-        "Embedding model supplies per-chunk similarity scores; merge only uses time + those scores.",
+        "max_gap_seconds=%.4f max_score_drop_from_peak=%.4f min_score_ratio_of_peak=%.4f "
+        "dedupe_by_chunk_index=%s - per clip: dedupe duplicate chunk_index rows, sort by time, "
+        "extend a range while (next.start - range_end) <= max_gap AND the next chunk is not much "
+        "weaker than the current range peak (ratio and absolute drop); else start a new range.",
         ctx,
         len(hits),
         minimum_score,
         max_gap_seconds,
+        max_score_drop_from_peak,
+        min_score_ratio_of_peak,
+        dedupe_by_chunk_index,
     )
 
     eligible = [h for h in hits if h.score > minimum_score]
@@ -146,13 +168,26 @@ def merge_chunk_hits(
 
     merged: list[MergedRange] = []
     for clip_id, clip_hits in grouped.items():
+        pre_dedupe = len(clip_hits)
+        if dedupe_by_chunk_index:
+            clip_hits = _dedupe_hits_by_chunk_index(clip_hits)
+            removed = pre_dedupe - len(clip_hits)
+            if removed:
+                logger.info(
+                    "[chunk_range_merge] %sclip_id=%s dedupe_by_chunk_index removed=%s kept=%s",
+                    ctx,
+                    clip_id,
+                    removed,
+                    len(clip_hits),
+                )
+
         sorted_hits = sorted(clip_hits, key=lambda h: h.start_time_seconds)
         if not sorted_hits:
             continue
 
         logger.info(
             "[chunk_range_merge] %sclip_id=%s timeline_walk eligible_chunks=%s "
-            "(sorted by start_time; embedding model scores each chunk vs query — merge only uses time gaps + scores)",
+            "(sorted by start_time; embedding scores each chunk vs query)",
             ctx,
             clip_id,
             len(sorted_hits),
@@ -186,19 +221,7 @@ def merge_chunk_hits(
 
         for current in sorted_hits[1:]:
             gap = current.start_time_seconds - range_end
-            if gap <= max_gap_seconds:
-                logger.debug(
-                    "[chunk_range_merge] %sclip_id=%s extend_range: gap=%.4fs <= max_gap=%.4fs "
-                    "append chunk_idx=%s (ranges grow along the clip when neighbors are close in time)",
-                    ctx,
-                    clip_id,
-                    gap,
-                    max_gap_seconds,
-                    current.chunk_index,
-                )
-                range_end = max(range_end, current.end_time_seconds)
-                chunk_hits.append(current)
-            else:
+            if gap > max_gap_seconds:
                 logger.debug(
                     "[chunk_range_merge] %sclip_id=%s split_range: gap=%.4fs > max_gap=%.4fs "
                     "flush current range; next range starts at chunk_idx=%s",
@@ -215,6 +238,47 @@ def merge_chunk_hits(
                 file_name = current.file_name
                 modality = current.modality
                 chunk_hits = [current]
+                continue
+
+            range_peak = max(h.score for h in chunk_hits)
+            too_weak_vs_peak = current.score < (range_peak * min_score_ratio_of_peak) or (
+                (range_peak - current.score) > max_score_drop_from_peak
+            )
+            if too_weak_vs_peak:
+                logger.debug(
+                    "[chunk_range_merge] %sclip_id=%s split_range: score_drop_vs_peak "
+                    "range_peak=%.4f current=%.4f min_ratio_of_peak=%.4f max_drop=%.4f "
+                    "next chunk_idx=%s",
+                    ctx,
+                    clip_id,
+                    range_peak,
+                    current.score,
+                    min_score_ratio_of_peak,
+                    max_score_drop_from_peak,
+                    current.chunk_index,
+                )
+                close_range("score_drop_vs_range_peak")
+                range_start = current.start_time_seconds
+                range_end = current.end_time_seconds
+                local_key = current.local_key
+                file_name = current.file_name
+                modality = current.modality
+                chunk_hits = [current]
+                continue
+
+            logger.debug(
+                "[chunk_range_merge] %sclip_id=%s extend_range: gap=%.4fs <= max_gap=%.4fs "
+                "append chunk_idx=%s score=%.4f range_peak=%.4f",
+                ctx,
+                clip_id,
+                gap,
+                max_gap_seconds,
+                current.chunk_index,
+                current.score,
+                range_peak,
+            )
+            range_end = max(range_end, current.end_time_seconds)
+            chunk_hits.append(current)
 
         close_range("end_of_sorted_hits")
 
