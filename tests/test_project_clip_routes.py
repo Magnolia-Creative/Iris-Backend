@@ -428,3 +428,56 @@ def test_semantic_search_project_route(monkeypatch):
     body = response.json()
     assert body["matches"][0]["file_name"] == "x.m4a"
     assert body["matches"][0]["local_key"] == "abc"
+
+
+def test_transcript_search_project_not_found(monkeypatch):
+    main.app.dependency_overrides[get_db] = _fake_db_semantic_404
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+    try:
+        with TestClient(main.app) as client:
+            response = client.post("/projects/40404/transcript-search", json={"query": "hello"})
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_transcript_search_project_route(monkeypatch):
+    async def fake_search(db, *, project_id, query, limit=None):
+        assert project_id == 11
+        assert query == "car"
+        assert limit == 3
+        return {
+            "matches": [
+                {
+                    "clip_id": 99,
+                    "local_key": "abc",
+                    "file_name": "x.m4a",
+                    "start_time_seconds": 1.0,
+                    "end_time_seconds": 4.0,
+                    "confidence": 101.0,
+                    "source": "audio",
+                    "match_text": "the car stopped",
+                }
+            ],
+            "query": query,
+        }
+
+    monkeypatch.setattr(main, "search_project_transcript", fake_search)
+    main.app.dependency_overrides[get_db] = _fake_db_semantic_200
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/projects/11/transcript-search",
+                json={"query": "car", "limit": 3},
+            )
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matches"][0]["match_text"] == "the car stopped"
+    assert body["matches"][0]["source"] == "audio"

@@ -49,6 +49,7 @@ from app.services.session_ingest import (
     process_project_clips,
 )
 from app.services.semantic_search_service import search_project_semantic
+from app.services.transcript_search_service import search_project_transcript
 from app.services.session_state_builder import build_initial_state_from_session_payload
 from app.services.realtime_transcription import (
     ALLOWED_TRANSCRIBE_MODELS,
@@ -389,6 +390,31 @@ async def semantic_search_project(
         logger.info("[semantic_search] http project_id=%s not found", project_id)
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
     return await search_project_semantic(
+        db,
+        project_id=project_id,
+        query=payload.query,
+        limit=payload.limit,
+    )
+
+
+@app.post("/projects/{project_id}/transcript-search")
+async def transcript_search_project(
+    project_id: int,
+    payload: SemanticSearchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    preview = (payload.query or "").strip().replace("\n", " ")[:120]
+    logger.info(
+        "[transcript_search] http project_id=%s limit=%s query_preview=%r",
+        project_id,
+        payload.limit,
+        preview,
+    )
+    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
+    if result.scalar_one_or_none() is None:
+        logger.info("[transcript_search] http project_id=%s not found", project_id)
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    return await search_project_transcript(
         db,
         project_id=project_id,
         query=payload.query,
