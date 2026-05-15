@@ -1,0 +1,53 @@
+---
+description: Structure every plan with lettered sections and numbered steps so work stays focused and model-agnostic
+alwaysApply: true
+---
+
+# Plan Structure (Letters + Numbers)
+
+When producing a plan (whether via the CreatePlan tool or any planning artifact), structure it so each step is a single, atomic, commit-sized unit of work that any model can pick up and execute without re-deriving context.
+
+## Required Format
+
+- Group the plan into top-level **sections** labeled `A`, `B`, `C`, ... Each section is a logical area (e.g. backend endpoint, iOS networking, domain model, UI panel).
+- Inside each section, list **steps** as `A1`, `A2`, `B1`, `B2`, ... Each numbered step:
+  - Is **one cohesive commit** (matches `commit-after-step.mdc`).
+  - Names the exact files to touch with markdown links and, where useful, line numbers.
+  - States the concrete change in 1–5 bullets — not a vague intent.
+- Section headings use `## A. Section Name` and step headings use `### A1. Step Name`.
+- Add a final cleanup/verification section (e.g. `## Z. Cleanup + verification`) when the plan touches multiple repos or requires build/test confirmation.
+- When relevant, list **Open follow-ups** at the end for items intentionally deferred.
+
+## Why
+
+- Letters scope work; numbers create a stable, citeable id (`A1`, `C3`) for the user to reference.
+- One step = one commit makes resumption trivial after interruption or model switch.
+- Concrete file paths + snippets prevent re-exploration on each step.
+
+## Example Skeleton
+
+```markdown
+## A. Backend — new endpoint
+
+### A1. Add GET /captions route
+- Edit [Iris-Backend/main.py](Iris-Backend/main.py) near line 285.
+- Reuse helper from [transcript_store.py](Iris-Backend/app/services/transcript_store.py).
+- Return shape: `{ project_id, local_key, sentences: [...] }`.
+
+### A2. Test for the endpoint
+- Add focused pytest hitting 200 + 404 paths.
+
+## B. iOS — networking
+### B1. CaptionsService
+- New file `Iris-Main/.../CaptionsService.swift` mirroring `ClipTranscriptService`.
+
+## Z. Cleanup + verification
+- Build Iris-Main; manual GET /captions check against local backend.
+```
+
+## Anti-patterns
+
+- A single mega-step covering "implement the whole feature."
+- Steps without file paths.
+- Numbered steps without lettered grouping (loses the "section" focus).
+- Mixing two unrelated commits into one step for convenience.
