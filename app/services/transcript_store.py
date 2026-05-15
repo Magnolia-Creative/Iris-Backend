@@ -1,5 +1,5 @@
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +46,94 @@ async def insert_sentence_upload_transcript(db: AsyncSession, result: dict[str, 
     out_id = str(row.id)
     await db.commit()
     return out_id
+
+
+def _sentences_from_transcript_payload(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Map persisted `segments` to API `sentences` (same structure, normalized copy)."""
+    raw = transcript_payload.get("segments")
+    if not isinstance(raw, list):
+        return []
+    sentences: list[dict[str, Any]] = []
+    for seg in raw:
+        if not isinstance(seg, dict):
+            continue
+        item: dict[str, Any] = {}
+        for key in ("text", "start", "end", "confidence"):
+            if key in seg:
+                item[key] = seg[key]
+        words = seg.get("words")
+        if isinstance(words, list):
+            item["words"] = words
+        sentences.append(item)
+    return sentences
+
+
+async def get_clip_captions_payload(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    local_key: str,
+) -> tuple[
+    Literal["ok", "project_not_found", "clip_not_found", "transcript_not_ready"],
+    dict[str, Any] | None,
+]:
+    """Resolve captions JSON for a clip by project + local_key.
+
+    Returns ("ok", payload), ("project_not_found", None), ("clip_not_found", None),
+    or ("transcript_not_ready", partial) when the clip exists but has no transcript row yet.
+    """
+    proj_result = await db.execute(select(models.Project).where(models.Project.id == project_id))
+    if proj_result.scalar_one_or_none() is None:
+        return "project_not_found", None
+
+    clip_result = await db.execute(
+        select(models.Clip)
+        .options(selectinload(models.Clip.transcript))
+        .where(
+            models.Clip.project_id == project_id,
+            models.Clip.local_key == local_key,
+        )
+    )
+    clip = clip_result.scalar_one_or_none()
+    if clip is None:
+        return "clip_not_found", None
+
+    transcript_record = clip.transcript
+    if transcript_record is None or not isinstance(transcript_record.transcript, dict):
+        return "transcript_not_ready", {
+            "project_id": project_id,
+            "local_key": local_key,
+            "clip_id": int(clip.id),
+            "processing_status": clip.processing_status,
+        }
+
+    transcript_payload = transcript_record.transcript
+    sentences = _sentences_from_transcript_payload(transcript_payload)
+    full_text = transcript_payload.get("full_text")
+    if not isinstance(full_text, str):
+        full_text = ""
+
+    payload: dict[str, Any] = {
+        "project_id": project_id,
+        "local_key": local_key,
+        "clip_id": int(clip.id),
+        "transcript_id": int(transcript_record.id),
+        "processing_status": clip.processing_status,
+        "full_text": full_text,
+        "sentences": sentences,
+        "meta": {
+            "source_file": transcript_payload.get("source_file"),
+            "mime_type": transcript_payload.get("mime_type"),
+            "extension": transcript_payload.get("extension"),
+            "clip_meta": transcript_payload.get("clip_meta")
+            if isinstance(transcript_payload.get("clip_meta"), dict)
+            else {},
+            "video_report": transcript_payload.get("video_report")
+            if isinstance(transcript_payload.get("video_report"), dict)
+            else {},
+        },
+    }
+    return "ok", payload
 
 
 async def get_transcripts_for_clips(

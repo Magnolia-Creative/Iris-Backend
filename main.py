@@ -26,7 +26,6 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base, engine, get_db
-from app.services.transcript_store import insert_sentence_upload_transcript
 from app.automake.runtime import (
     approve_session_timeline,
     get_session_state,
@@ -62,7 +61,12 @@ from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_i
 from app.intent_compiler.transcripts import prepare_intent_transcript_context
 from app.intent_compiler.voice import stream_voice_intent
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
-from app.services.transcript_store import get_persisted_project_data, get_persisted_session_data
+from app.services.transcript_store import (
+    get_clip_captions_payload,
+    get_persisted_project_data,
+    get_persisted_session_data,
+    insert_sentence_upload_transcript,
+)
 from app.database import models  # noqa: F401
 from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
@@ -291,6 +295,29 @@ async def get_project_clips_status(
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
     return payload
+
+
+@app.get("/captions")
+async def get_captions_for_clip(
+    project_id: int = Query(..., description="Project id"),
+    local_key: str = Query(..., description="Clip local_key matching ingest"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return transcript segments as `sentences` for a single clip (captions client)."""
+    status, body = await get_clip_captions_payload(db, project_id=project_id, local_key=local_key)
+    if status == "project_not_found":
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    if status == "clip_not_found":
+        raise HTTPException(
+            status_code=404,
+            detail=f"No clip with local_key={local_key!r} for project {project_id}.",
+        )
+    if status == "transcript_not_ready":
+        raise HTTPException(
+            status_code=409,
+            detail="Transcript not available yet for this clip.",
+        )
+    return body
 
 
 @app.post("/projects/agent-sessions")
