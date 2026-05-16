@@ -30,6 +30,7 @@ from app.intent_compiler.models import (
     SemanticEditPlan,
     TranscriptWord,
 )
+from app.intent_compiler import runs as intent_runs
 from app.intent_compiler.transcript_phrases import collect_phrase_matches
 from app.intent_compiler.transcripts import hydrate_intent_transcript_context, prepare_intent_transcript_context
 from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
@@ -58,6 +59,24 @@ def _sample_context() -> dict:
         },
         "orderedClipIdsByTrackId": {"track-video": ["clip-b"]},
     }
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.values = {}
+        self.expirations = {}
+        self.deleted = []
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+        self.expirations[key] = ex
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def delete(self, key):
+        self.deleted.append(key)
+        self.values.pop(key, None)
 
 
 def _multi_clip_context() -> dict:
@@ -1153,6 +1172,8 @@ def test_intent_llm_compiler_uses_function_calling_for_planner_schemas():
 
 
 def test_text_intent_run_streams_final_result(monkeypatch):
+    redis = _FakeRedis()
+
     class FakeIntentCompilerService:
         async def compile_prompt(self, *, prompt, context, event_handler=None):
             assert prompt == "make this clip feel vintage"
@@ -1168,6 +1189,7 @@ def test_text_intent_run_streams_final_result(monkeypatch):
                 experimentalEffectOperations=[],
             )
 
+    monkeypatch.setattr(intent_runs, "get_redis_client", lambda: redis)
     monkeypatch.setattr(main, "IntentCompilerService", FakeIntentCompilerService)
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -1179,12 +1201,14 @@ def test_text_intent_run_streams_final_result(monkeypatch):
             )
             assert response.status_code == 200
             run_id = response.json()["run_id"]
+            assert redis.expirations[f"intent-run:{run_id}"] == intent_runs.INTENT_RUN_TTL_SECONDS
             with client.websocket_connect(f"/ws/intent-runs/{run_id}") as websocket:
                 assert websocket.receive_json()["type"] == "run_started"
                 assert websocket.receive_json()["type"] == "planner_started"
                 final = websocket.receive_json()
                 assert final["type"] == "intent_result"
                 assert final["result"]["actions"] == []
+            assert f"intent-run:{run_id}" in redis.deleted
     finally:
         main.app.router.lifespan_context = original_lifespan
 

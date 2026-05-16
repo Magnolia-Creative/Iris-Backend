@@ -383,7 +383,7 @@ async def create_intent_run_endpoint(
         len(payload.prompt),
         _intent_context_log_summary(context, hydration=hydration_meta),
     )
-    run = create_intent_run(prompt=payload.prompt, context=context)
+    run = await create_intent_run(prompt=payload.prompt, context=context)
     websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(
         "http://",
         "ws://",
@@ -718,7 +718,7 @@ async def intent_run_websocket(
 ) -> None:
     await websocket.accept()
     logger.info("[intent-runs] WebSocket accepted run=%s", run_id)
-    run = get_intent_run(run_id)
+    run = await get_intent_run(run_id)
     if run is None:
         logger.warning("[intent-runs] WebSocket run not found run=%s", run_id)
         await websocket.send_text(
@@ -789,7 +789,7 @@ async def intent_run_websocket(
             await websocket.close(code=1011)
     finally:
         logger.info("[intent-runs] Deleting run=%s", run_id)
-        delete_intent_run(run_id)
+        await delete_intent_run(run_id)
 
 
 @app.websocket("/ws/transcribe")
