@@ -78,7 +78,8 @@ def test_create_sentence_transcription_route(monkeypatch):
 
 
 def test_create_project_agent_session_route(monkeypatch):
-    async def fake_create_agent_session(db, *, session_name=None, project_name=None):
+    async def fake_create_agent_session(db, *, owner_user_id, session_name=None, project_name=None):
+        assert owner_user_id == "user_test"
         assert session_name is None
         assert project_name == "Launch Day"
         return {
@@ -112,7 +113,8 @@ def test_create_project_agent_session_route(monkeypatch):
 
 
 def test_create_project_route(monkeypatch):
-    async def fake_create_project(db, *, name=None):
+    async def fake_create_project(db, *, owner_user_id, name=None):
+        assert owner_user_id == "user_test"
         assert name == "My Doc"
         return {"project_id": 42, "project_name": "My Doc"}
 
@@ -166,7 +168,14 @@ def test_get_project_clips_status_route(monkeypatch):
 
 
 def test_create_agent_session_for_project_route(monkeypatch):
-    async def fake_create_agent_session_for_project(db, *, project_id, session_name=None):
+    async def fake_create_agent_session_for_project(
+        db,
+        *,
+        owner_user_id,
+        project_id,
+        session_name=None,
+    ):
+        assert owner_user_id == "user_test"
         assert project_id == 11
         assert session_name == "Edit run"
         return {
@@ -370,6 +379,12 @@ async def _fake_db_semantic_404() -> AsyncIterator[object]:
 
 
 def test_semantic_search_project_not_found(monkeypatch):
+    async def fake_require_owned_project(*args, **kwargs):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Project 40404 not found.")
+
+    monkeypatch.setattr(main, "require_owned_project", fake_require_owned_project)
     main.app.dependency_overrides[get_db] = _fake_db_semantic_404
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -431,6 +446,12 @@ def test_semantic_search_project_route(monkeypatch):
 
 
 def test_transcript_search_project_not_found(monkeypatch):
+    async def fake_require_owned_project(*args, **kwargs):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Project 40404 not found.")
+
+    monkeypatch.setattr(main, "require_owned_project", fake_require_owned_project)
     main.app.dependency_overrides[get_db] = _fake_db_semantic_404
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
