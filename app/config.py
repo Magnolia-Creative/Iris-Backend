@@ -12,6 +12,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_list(name: str) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 class Settings:
     def __init__(self) -> None:
         database_url = os.getenv("DATABASE_URL")
@@ -42,6 +49,16 @@ class Settings:
         self.outbound_ssl_cafile = os.getenv("SSL_CERT_FILE") or os.getenv("SSL_CA_BUNDLE")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.semantic_indexing_enabled = _env_bool("SEMANTIC_INDEXING_ENABLED", True)
+        self.clerk_frontend_api_url = os.getenv(
+            "CLERK_FRONTEND_API_URL",
+            "https://clerk.irisvideo.app",
+        ).rstrip("/")
+        self.clerk_jwks_url = os.getenv(
+            "CLERK_JWKS_URL",
+            f"{self.clerk_frontend_api_url}/.well-known/jwks.json",
+        )
+        self.clerk_issuer = os.getenv("CLERK_ISSUER", self.clerk_frontend_api_url).rstrip("/")
+        self.clerk_authorized_parties = _env_list("CLERK_AUTHORIZED_PARTIES")
 
 
 settings = Settings()
