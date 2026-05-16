@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 async def create_project(
     db: AsyncSession,
     *,
+    owner_user_id: str,
     name: str | None = None,
 ) -> dict[str, Any]:
     resolved_name = name or f"project-{datetime.utcnow().isoformat(timespec='seconds')}"
-    project = models.Project(name=resolved_name)
+    project = models.Project(name=resolved_name, clerk_user_id=owner_user_id)
     db.add(project)
     await db.commit()
     await db.refresh(project)
@@ -52,6 +53,7 @@ async def create_project(
 async def create_agent_session(
     db: AsyncSession,
     *,
+    owner_user_id: str,
     session_name: str | None = None,
     project_name: str | None = None,
 ) -> dict[str, Any]:
@@ -62,8 +64,12 @@ async def create_agent_session(
     )
     resolved_project_name = project_name or f"project-{resolved_session_name}"
 
-    session = models.Session(name=resolved_session_name, status="created")
-    project = models.Project(name=resolved_project_name)
+    session = models.Session(
+        name=resolved_session_name,
+        status="created",
+        clerk_user_id=owner_user_id,
+    )
+    project = models.Project(name=resolved_project_name, clerk_user_id=owner_user_id)
     db.add(session)
     db.add(project)
     await db.flush()
@@ -89,14 +95,18 @@ async def create_agent_session(
 async def create_agent_session_for_project(
     db: AsyncSession,
     *,
+    owner_user_id: str,
     project_id: int,
     session_name: str | None = None,
 ) -> dict[str, Any]:
     project = await _require_project(db, project_id=project_id)
+    if project.clerk_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
     resolved_session_name = session_name or project.name or f"session-{project_id}"
     session = models.Session(
         name=resolved_session_name,
         status="created",
+        clerk_user_id=owner_user_id,
         project_id=project_id,
     )
     db.add(session)
@@ -127,11 +137,13 @@ async def ingest_session_clips(
     db: AsyncSession,
     videos: list[UploadFile],
     local_keys: list[str],
+    owner_user_id: str,
     session_name: str | None = None,
     project_name: str | None = None,
 ) -> dict[str, Any]:
     created = await create_agent_session(
         db,
+        owner_user_id=owner_user_id,
         session_name=session_name,
         project_name=project_name,
     )
