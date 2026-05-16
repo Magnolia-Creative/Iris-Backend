@@ -15,6 +15,7 @@ INTENT_RUN_TTL_SECONDS = 15 * 60
 @dataclass(frozen=True)
 class IntentRun:
     run_id: str
+    owner_user_id: str
     prompt: str
     context: IntentCompilerContext
     created_at: datetime
@@ -24,9 +25,15 @@ def _intent_run_key(run_id: str) -> str:
     return f"intent-run:{run_id}"
 
 
-async def create_intent_run(*, prompt: str, context: IntentCompilerContext) -> IntentRun:
+async def create_intent_run(
+    *,
+    owner_user_id: str,
+    prompt: str,
+    context: IntentCompilerContext,
+) -> IntentRun:
     run = IntentRun(
         run_id=str(uuid4()),
+        owner_user_id=owner_user_id,
         prompt=prompt,
         context=context,
         created_at=datetime.now(tz=UTC),
@@ -37,6 +44,7 @@ async def create_intent_run(*, prompt: str, context: IntentCompilerContext) -> I
         json.dumps(
             {
                 "run_id": run.run_id,
+                "owner_user_id": run.owner_user_id,
                 "prompt": run.prompt,
                 "context": run.context.model_dump(mode="json", by_alias=True),
                 "created_at": run.created_at.isoformat(),
@@ -53,8 +61,12 @@ async def get_intent_run(run_id: str) -> IntentRun | None:
     if payload is None:
         return None
     data = json.loads(payload)
+    owner_user_id = data.get("owner_user_id")
+    if not isinstance(owner_user_id, str) or not owner_user_id:
+        return None
     return IntentRun(
         run_id=str(data["run_id"]),
+        owner_user_id=owner_user_id,
         prompt=str(data["prompt"]),
         context=IntentCompilerContext.model_validate(data["context"]),
         created_at=datetime.fromisoformat(str(data["created_at"])),
