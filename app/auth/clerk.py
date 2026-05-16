@@ -73,8 +73,9 @@ def verify_clerk_token(token: str) -> ClerkPrincipal:
         )
     except (InvalidTokenError, PyJWKClientError) as exc:
         logger.warning(
-            "[auth] Clerk token verification failed reason=%s issuer=%s jwks_url=%s",
+            "[auth] Clerk token verification failed reason=%s message=%r issuer=%s jwks_url=%s",
             exc.__class__.__name__,
+            str(exc),
             settings.clerk_issuer,
             settings.clerk_jwks_url,
         )
