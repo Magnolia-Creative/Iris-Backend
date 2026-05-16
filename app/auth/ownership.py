@@ -1,9 +1,14 @@
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.clerk import ClerkPrincipal
 from app.database import models
+
+
+logger = logging.getLogger(__name__)
 
 
 def _not_found(resource: str, resource_id: int | str) -> HTTPException:
@@ -24,7 +29,17 @@ async def require_owned_project(
     )
     project = result.scalar_one_or_none()
     if project is None:
+        logger.warning(
+            "[auth] Ownership rejected resource=project project_id=%s user_id=%s",
+            project_id,
+            principal.user_id,
+        )
         raise _not_found("Project", project_id)
+    logger.info(
+        "[auth] Ownership accepted resource=project project_id=%s user_id=%s",
+        project_id,
+        principal.user_id,
+    )
     return project
 
 
@@ -42,7 +57,17 @@ async def require_owned_session(
     )
     session = result.scalar_one_or_none()
     if session is None:
+        logger.warning(
+            "[auth] Ownership rejected resource=session session_id=%s user_id=%s",
+            session_id,
+            principal.user_id,
+        )
         raise _not_found("Session", session_id)
+    logger.info(
+        "[auth] Ownership accepted resource=session session_id=%s user_id=%s",
+        session_id,
+        principal.user_id,
+    )
     return session
 
 
@@ -62,5 +87,17 @@ async def require_owned_project_clip(
     )
     clip = result.scalar_one_or_none()
     if clip is None:
+        logger.warning(
+            "[auth] Ownership rejected resource=clip project_id=%s local_key=%s user_id=%s",
+            project_id,
+            local_key,
+            principal.user_id,
+        )
         raise _not_found("Clip", local_key)
+    logger.info(
+        "[auth] Ownership accepted resource=clip project_id=%s local_key=%s user_id=%s",
+        project_id,
+        local_key,
+        principal.user_id,
+    )
     return clip
