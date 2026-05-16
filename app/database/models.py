@@ -13,9 +13,11 @@ from app.database import Base
 
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (Index("idx_projects_clerk_user_id", "clerk_user_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    clerk_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -32,10 +34,12 @@ class Project(Base):
 
 class Session(Base):
     __tablename__ = "sessions"
+    __table_args__ = (Index("idx_sessions_clerk_user_id", "clerk_user_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
+    clerk_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     project_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
