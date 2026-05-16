@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 
 import main
 from app.auth import ClerkPrincipal
-from app.auth.clerk import require_clerk_user
 from app.auth.ownership import require_owned_project, require_owned_session
 from app.database import get_db
 from app.database import models
