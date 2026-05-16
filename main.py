@@ -594,6 +594,8 @@ async def session_websocket(
     session_id: int,
     db: AsyncSession = Depends(get_db),
 ):
+    principal = await require_clerk_websocket_user(websocket)
+    await require_owned_session(db, session_id=session_id, principal=principal)
     await websocket.accept()
 
     async def send_event(payload: dict[str, Any]) -> None:
@@ -772,11 +774,25 @@ async def intent_run_websocket(
     websocket: WebSocket,
     run_id: str,
 ) -> None:
+    principal = await require_clerk_websocket_user(websocket)
     await websocket.accept()
     logger.info("[intent-runs] WebSocket accepted run=%s", run_id)
     run = await get_intent_run(run_id)
     if run is None:
         logger.warning("[intent-runs] WebSocket run not found run=%s", run_id)
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "run_id": run_id,
+                    "detail": f"Intent run {run_id} not found.",
+                }
+            )
+        )
+        await websocket.close(code=1008)
+        return
+    if run.owner_user_id != principal.user_id:
+        logger.warning("[intent-runs] WebSocket run not owned run=%s", run_id)
         await websocket.send_text(
             json.dumps(
                 {
@@ -853,6 +869,7 @@ async def transcribe_websocket(
     websocket: WebSocket,
     model: str = Query(default=DEFAULT_TRANSCRIBE_MODEL),
 ) -> None:
+    await require_clerk_websocket_user(websocket)
     await websocket.accept()
     if model not in ALLOWED_TRANSCRIBE_MODELS:
         await websocket.send_text(
@@ -874,6 +891,7 @@ async def voice_intent_websocket(
     websocket: WebSocket,
     model: str = Query(default=DEFAULT_TRANSCRIBE_MODEL),
 ) -> None:
+    await require_clerk_websocket_user(websocket)
     await websocket.accept()
     if model not in ALLOWED_TRANSCRIBE_MODELS:
         await websocket.send_text(
