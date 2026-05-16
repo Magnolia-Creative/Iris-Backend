@@ -22,9 +22,17 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import (
+    ClerkPrincipal,
+    require_clerk_user,
+    require_clerk_websocket_user,
+    require_owned_project,
+    require_owned_project_clip,
+    require_owned_session,
+)
 from app.database import Base, engine, get_db
 from app.automake.runtime import (
     approve_session_timeline,
@@ -176,6 +184,15 @@ def _intent_result_log_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _context_id(value: int | str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Keep simple table creation for local development; use Alembic for production migrations.
@@ -201,7 +218,10 @@ def health():
 
 
 @app.get("/db-health")
-async def db_health(db: AsyncSession = Depends(get_db)):
+async def db_health(
+    _: ClerkPrincipal = Depends(require_clerk_user),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(text("SELECT 1"))
     return {"database": "ok", "result": result.scalar_one()}
 
@@ -209,6 +229,7 @@ async def db_health(db: AsyncSession = Depends(get_db)):
 @app.post("/transcriptions/sentences")
 async def create_sentence_transcription(
     audio: UploadFile = File(...),
+    _: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     audio_bytes = await audio.read()
@@ -240,6 +261,7 @@ async def create_sentence_transcription(
 async def create_session_from_upload(
     videos: list[UploadFile] = File(...),
     local_keys: list[str] = Form(..., alias="local_key"),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
     session_name: str | None = None,
 ):
@@ -247,6 +269,7 @@ async def create_session_from_upload(
         db,
         videos,
         local_keys=local_keys,
+        owner_user_id=principal.user_id,
         session_name=session_name,
     )
     return {
@@ -266,9 +289,10 @@ async def create_session_from_upload(
 @app.post("/projects")
 async def create_project_endpoint(
     payload: ProjectCreatePayload = Body(default=ProjectCreatePayload()),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await create_project(db, name=payload.name)
+    return await create_project(db, owner_user_id=principal.user_id, name=payload.name)
 
 
 @app.post("/projects/{project_id}/agent-sessions")
@@ -277,10 +301,12 @@ async def create_agent_session_for_existing_project(
     payload: AgentSessionForProjectCreatePayload = Body(
         default=AgentSessionForProjectCreatePayload()
     ),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     return await create_agent_session_for_project(
         db,
+        owner_user_id=principal.user_id,
         project_id=project_id,
         session_name=payload.session_name,
     )
@@ -289,8 +315,10 @@ async def create_agent_session_for_existing_project(
 @app.get("/projects/{project_id}/clips/status")
 async def get_project_clips_status(
     project_id: int,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_owned_project(db, project_id=project_id, principal=principal)
     payload = await get_persisted_project_data(db, project_id, include_ingest_details=False)
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
@@ -301,6 +329,7 @@ async def get_project_clips_status(
 async def get_captions_for_clip(
     project_id: int = Query(..., description="Project id"),
     local_key: str = Query(..., description="Clip local_key matching ingest"),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return transcript segments as `sentences` for a single clip (captions client)."""
@@ -309,6 +338,7 @@ async def get_captions_for_clip(
         project_id,
         local_key,
     )
+    await require_owned_project(db, project_id=project_id, principal=principal)
     status, body = await get_clip_captions_payload(db, project_id=project_id, local_key=local_key)
     if status == "project_not_found":
         logger.warning(
@@ -353,10 +383,12 @@ async def get_captions_for_clip(
 @app.post("/projects/agent-sessions")
 async def create_project_agent_session(
     payload: AgentSessionCreatePayload = Body(default=AgentSessionCreatePayload()),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     return await create_agent_session(
         db,
+        owner_user_id=principal.user_id,
         session_name=payload.session_name,
         project_name=payload.project_name,
     )
@@ -366,6 +398,7 @@ async def create_project_agent_session(
 async def create_intent_run_endpoint(
     payload: IntentCompileRequest,
     request: Request,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     logger.info(
@@ -373,6 +406,12 @@ async def create_intent_run_endpoint(
         len(payload.prompt),
         _intent_context_log_summary(payload.context),
     )
+    project_id = _context_id(payload.context.projectId)
+    if project_id is not None:
+        await require_owned_project(db, project_id=project_id, principal=principal)
+    session_id = _context_id(payload.context.sessionId)
+    if session_id is not None:
+        await require_owned_session(db, session_id=session_id, principal=principal)
     context, hydration_meta = await prepare_intent_transcript_context(
         prompt=payload.prompt,
         context=payload.context,
@@ -383,7 +422,11 @@ async def create_intent_run_endpoint(
         len(payload.prompt),
         _intent_context_log_summary(context, hydration=hydration_meta),
     )
-    run = await create_intent_run(prompt=payload.prompt, context=context)
+    run = await create_intent_run(
+        owner_user_id=principal.user_id,
+        prompt=payload.prompt,
+        context=context,
+    )
     websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(
         "http://",
         "ws://",
@@ -405,6 +448,7 @@ async def process_project_clip_batch(
     session_id: int | None = Form(None),
     visual_frame_manifest: str | None = Form(None),
     visual_frames: list[UploadFile] = File(default=[]),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     logger.info(
@@ -415,6 +459,9 @@ async def process_project_clip_batch(
         visual_frame_manifest is not None and bool(visual_frame_manifest.strip()),
         len(visual_frames),
     )
+    await require_owned_project(db, project_id=project_id, principal=principal)
+    if session_id is not None:
+        await require_owned_session(db, session_id=session_id, principal=principal)
     visual_map = await build_visual_frames_by_local_key(
         manifest_raw=visual_frame_manifest,
         visual_frame_files=visual_frames,
@@ -433,6 +480,7 @@ async def process_project_clip_batch(
 async def semantic_search_project(
     project_id: int,
     payload: SemanticSearchRequest,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     preview = (payload.query or "").strip().replace("\n", " ")[:120]
@@ -442,10 +490,7 @@ async def semantic_search_project(
         payload.limit,
         preview,
     )
-    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
-    if result.scalar_one_or_none() is None:
-        logger.info("[semantic_search] http project_id=%s not found", project_id)
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    await require_owned_project(db, project_id=project_id, principal=principal)
     return await search_project_semantic(
         db,
         project_id=project_id,
@@ -458,6 +503,7 @@ async def semantic_search_project(
 async def transcript_search_project(
     project_id: int,
     payload: SemanticSearchRequest,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
     preview = (payload.query or "").strip().replace("\n", " ")[:120]
@@ -467,10 +513,7 @@ async def transcript_search_project(
         payload.limit,
         preview,
     )
-    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
-    if result.scalar_one_or_none() is None:
-        logger.info("[transcript_search] http project_id=%s not found", project_id)
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    await require_owned_project(db, project_id=project_id, principal=principal)
     return await search_project_transcript(
         db,
         project_id=project_id,
@@ -482,8 +525,10 @@ async def transcript_search_project(
 @app.get("/sessions/{session_id}")
 async def get_session_status(
     session_id: int,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_owned_session(db, session_id=session_id, principal=principal)
     session_payload = await get_persisted_session_data(
         db=db,
         session_id=session_id,
@@ -497,8 +542,10 @@ async def get_session_status(
 @app.get("/sessions/{session_id}/debug")
 async def get_session_debug(
     session_id: int,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_owned_session(db, session_id=session_id, principal=principal)
     session_payload = await get_persisted_session_data(
         db=db,
         session_id=session_id,
@@ -522,8 +569,17 @@ async def cancel_project_clip(
     project_id: int,
     local_key: str,
     session_id: int | None = Query(None),
+    principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_owned_project_clip(
+        db,
+        project_id=project_id,
+        local_key=local_key,
+        principal=principal,
+    )
+    if session_id is not None:
+        await require_owned_session(db, session_id=session_id, principal=principal)
     return await cancel_clip_processing(
         db,
         project_id=project_id,
