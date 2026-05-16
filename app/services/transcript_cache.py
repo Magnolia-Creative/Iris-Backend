@@ -1,6 +1,9 @@
 import json
+import ssl
 from typing import Any
+from urllib.parse import urlparse
 
+import certifi
 from redis.asyncio import Redis
 
 from app.config import settings
@@ -16,11 +19,18 @@ def get_transcript_cache_key(session_id: str, clip_id: str) -> str:
 def get_redis_client() -> Redis:
     global _redis_client
     if _redis_client is None:
+        redis_url = settings.redis_url
+        tls_kwargs = (
+            {"ssl_ca_certs": certifi.where(), "ssl_cert_reqs": ssl.CERT_REQUIRED}
+            if urlparse(redis_url).scheme == "rediss"
+            else {}
+        )
         _redis_client = Redis.from_url(
-            settings.redis_url,
+            redis_url,
             decode_responses=True,
             socket_connect_timeout=5,
             socket_timeout=5,
+            **tls_kwargs,
         )
     return _redis_client
 
