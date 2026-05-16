@@ -1,4 +1,5 @@
 import uuid
+import logging
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -8,6 +9,8 @@ from sqlalchemy.orm import selectinload
 from app.database import models
 from app.services.clip_task_registry import clip_task_registry
 from app.services.sentence_transcript_payload import intent_jsonb_from_sentence_api_result
+
+logger = logging.getLogger(__name__)
 
 
 async def get_transcript_payload(
@@ -82,8 +85,18 @@ async def get_clip_captions_payload(
     Returns ("ok", payload), ("project_not_found", None), ("clip_not_found", None),
     or ("transcript_not_ready", partial) when the clip exists but has no transcript row yet.
     """
+    logger.info(
+        "[captions-store] lookup start project_id=%s local_key=%s",
+        project_id,
+        local_key,
+    )
     proj_result = await db.execute(select(models.Project).where(models.Project.id == project_id))
     if proj_result.scalar_one_or_none() is None:
+        logger.warning(
+            "[captions-store] project missing project_id=%s local_key=%s",
+            project_id,
+            local_key,
+        )
         return "project_not_found", None
 
     clip_result = await db.execute(
@@ -96,10 +109,23 @@ async def get_clip_captions_payload(
     )
     clip = clip_result.scalar_one_or_none()
     if clip is None:
+        logger.warning(
+            "[captions-store] clip missing project_id=%s local_key=%s",
+            project_id,
+            local_key,
+        )
         return "clip_not_found", None
 
     transcript_record = clip.transcript
     if transcript_record is None or not isinstance(transcript_record.transcript, dict):
+        logger.info(
+            "[captions-store] transcript not ready project_id=%s local_key=%s clip_id=%s processing_status=%s transcript_present=%s",
+            project_id,
+            local_key,
+            int(clip.id),
+            clip.processing_status,
+            transcript_record is not None,
+        )
         return "transcript_not_ready", {
             "project_id": project_id,
             "local_key": local_key,
@@ -133,6 +159,16 @@ async def get_clip_captions_payload(
             else {},
         },
     }
+    logger.info(
+        "[captions-store] transcript ready project_id=%s local_key=%s clip_id=%s transcript_id=%s processing_status=%s sentence_count=%s full_text_chars=%s",
+        project_id,
+        local_key,
+        int(clip.id),
+        int(transcript_record.id),
+        clip.processing_status,
+        len(sentences),
+        len(full_text),
+    )
     return "ok", payload
 
 

@@ -1,5 +1,5 @@
 ---
-description: Commit every completed implementation step; no batching
+description: 
 alwaysApply: true
 ---
 
@@ -9,7 +9,7 @@ alwaysApply: true
 
 After **each** completed implementation step, you **must** stage and commit before continuing to the next step or before treating the task as done for that slice of work. **Do not** accumulate several logical changes into a single commit for convenience.
 
-This is a standing explicit user instruction. **Do not ask for confirmation** before committing completed steps.
+This is a standing explicit user instruction. **Do not ask for confirmation** before committing completed steps. **Commit steps even when the user doesn't explicitly mention**
 
 ## What counts as one step
 
