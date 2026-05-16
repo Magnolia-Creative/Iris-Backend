@@ -1,4 +1,5 @@
 import logging
+from time import perf_counter
 from typing import Any, Awaitable, Callable
 
 from langchain_openai import ChatOpenAI
@@ -19,6 +20,10 @@ _session_store: dict[str, SessionGraphState] = {}
 
 def _trace(message: str) -> None:
     print(f"[TRACE][runtime] {message}", flush=True)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((perf_counter() - started_at) * 1000)
 
 
 def _default_llm() -> ChatOpenAI:
@@ -54,6 +59,7 @@ async def run_session_until_pause(
     event_handler: SessionEventHandler,
     llm: Any | None = None,
 ) -> SessionGraphState:
+    started_at = perf_counter()
     graph = build_session_graph()
     session_id = state["session_id"]
     initialize_session_debug(session_id, state)
@@ -85,6 +91,13 @@ async def run_session_until_pause(
             )
             fingerprint = (node_name, status_message)
             if fingerprint != last_status_fingerprint:
+                logger.info(
+                    "[runtime] Status update session=%s node=%s message=%r details=%s",
+                    session_id,
+                    node_name,
+                    status_message,
+                    status_details if isinstance(status_details, dict) else {},
+                )
                 await event_handler(
                     {
                         "type": "status_update",
@@ -111,10 +124,21 @@ async def run_session_until_pause(
 
     _session_store[session_id] = latest_state
     update_session_debug_state(session_id, latest_state)
+    persist_started_at = perf_counter()
+    logger.info("[runtime] Persisting graph state session=%s", session_id)
     await persist_session_graph_state(db=db, session_id=int(session_id), state=latest_state)
+    logger.info(
+        "[runtime] Persisted graph state session=%s elapsed_ms=%s",
+        session_id,
+        _elapsed_ms(persist_started_at),
+    )
 
     if latest_state.get("waiting_for_user"):
-        logger.info("[runtime] Session paused waiting_for_user session=%s", session_id)
+        logger.info(
+            "[runtime] Session paused waiting_for_user session=%s elapsed_ms=%s",
+            session_id,
+            _elapsed_ms(started_at),
+        )
         _trace(f"pause_for_user session={session_id}")
         await event_handler(
             {
@@ -132,7 +156,11 @@ async def run_session_until_pause(
             }
         )
     else:
-        logger.info("[runtime] Session completed session=%s", session_id)
+        logger.info(
+            "[runtime] Session completed session=%s elapsed_ms=%s",
+            session_id,
+            _elapsed_ms(started_at),
+        )
         _trace(f"session_complete session={session_id}")
         await event_handler(
             {

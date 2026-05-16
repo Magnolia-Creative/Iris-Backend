@@ -1,5 +1,6 @@
 import json
 import logging
+from time import perf_counter
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 def _trace(message: str) -> None:
     print(f"[TRACE][timeline_planner] {message}", flush=True)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((perf_counter() - started_at) * 1000)
 
 
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
@@ -49,6 +54,7 @@ async def _emit_event(
 
 
 async def _timeline_context(state: SessionGraphState) -> list[dict[str, Any]]:
+    started_at = perf_counter()
     context: list[dict[str, Any]] = []
     cleanup_plan = state.get("cleanup_plan") or {}
     trim_suggestions = cleanup_plan.get("trim_suggestions") or []
@@ -56,7 +62,21 @@ async def _timeline_context(state: SessionGraphState) -> list[dict[str, Any]]:
         cache_key = clip.get("transcript_cache_key")
         transcript_excerpt = ""
         if cache_key:
+            cache_started_at = perf_counter()
+            logger.info(
+                "[timeline_planner] Transcript cache fetch starting session=%s clip_id=%s key=%s",
+                state.get("session_id"),
+                clip.get("clip_id"),
+                cache_key,
+            )
             cached = await get_cached_transcript(cache_key)
+            logger.info(
+                "[timeline_planner] Transcript cache fetch completed session=%s clip_id=%s hit=%s elapsed_ms=%s",
+                state.get("session_id"),
+                clip.get("clip_id"),
+                isinstance(cached, dict),
+                _elapsed_ms(cache_started_at),
+            )
             if isinstance(cached, dict):
                 transcript_excerpt = str(cached.get("full_text") or "")
         context.append(
@@ -74,12 +94,19 @@ async def _timeline_context(state: SessionGraphState) -> list[dict[str, Any]]:
                 ],
             }
         )
+    logger.info(
+        "[timeline_planner] Timeline context built session=%s clips=%s elapsed_ms=%s",
+        state.get("session_id"),
+        len(context),
+        _elapsed_ms(started_at),
+    )
     return context
 
 
 async def timeline_planner_node(
     state: SessionGraphState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
+    started_at = perf_counter()
     node_name = "timeline_planner"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
     _trace(
@@ -93,6 +120,16 @@ async def timeline_planner_node(
     )
 
     llm = _get_llm(config).with_structured_output(TimelinePlannerOutput)
+    context_started_at = perf_counter()
+    clip_context = await _timeline_context(state)
+    logger.info(
+        "[%s] LLM invoke starting session=%s clip_context=%s context_elapsed_ms=%s",
+        node_name,
+        state.get("session_id"),
+        len(clip_context),
+        _elapsed_ms(context_started_at),
+    )
+    llm_started_at = perf_counter()
     result = await llm.ainvoke(
         [
             (
@@ -110,7 +147,7 @@ async def timeline_planner_node(
                 f"Cleanup plan: {json.dumps(state.get('cleanup_plan'))}\n"
                 f"Prior timeline: {json.dumps(state.get('timeline'))}\n"
                 f"Notes: {json.dumps(state.get('notes', []))}\n"
-                f"Clip context: {json.dumps(await _timeline_context(state))}\n"
+                f"Clip context: {json.dumps(clip_context)}\n"
                 "If iteration count > 0, determine whether the prompt requests a full overhaul or "
                 "a targeted adjustment of the prior timeline. Default to targeted adjustment unless "
                 "the user explicitly requests replacing everything. For targeted adjustments, keep "
@@ -127,6 +164,12 @@ async def timeline_planner_node(
             ),
         ]
     )
+    logger.info(
+        "[%s] LLM invoke completed session=%s elapsed_ms=%s",
+        node_name,
+        state.get("session_id"),
+        _elapsed_ms(llm_started_at),
+    )
     _trace(
         "thinking="
         + json.dumps(
@@ -138,10 +181,11 @@ async def timeline_planner_node(
     )
 
     logger.info(
-        "[%s] Completed session=%s timeline_entries=%d",
+        "[%s] Completed session=%s timeline_entries=%d elapsed_ms=%s",
         node_name,
         state.get("session_id"),
         len(result.timeline),
+        _elapsed_ms(started_at),
     )
     await _emit_event(
         config,

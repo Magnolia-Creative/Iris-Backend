@@ -1,5 +1,6 @@
 import json
 import logging
+from time import perf_counter
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -14,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 def _trace(message: str) -> None:
     print(f"[TRACE][decision_agent] {message}", flush=True)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((perf_counter() - started_at) * 1000)
 
 
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
@@ -135,6 +140,7 @@ def _user_facing_reasoning_notes(
 async def decision_agent_node(
     state: SessionGraphState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
+    started_at = perf_counter()
     node_name = "decision_agent"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
     _trace(
@@ -190,7 +196,21 @@ async def decision_agent_node(
             "select the best non-finish action to reevaluate the user's latest request.",
         ),
     ]
+    logger.info(
+        "[%s] LLM invoke starting session=%s prompt_chars=%s force_reconsider=%s",
+        node_name,
+        state.get("session_id"),
+        len(str(state.get("user_prompt") or "")),
+        force_reconsider,
+    )
+    llm_started_at = perf_counter()
     result = await llm.ainvoke(messages)
+    logger.info(
+        "[%s] LLM invoke completed session=%s elapsed_ms=%s",
+        node_name,
+        state.get("session_id"),
+        _elapsed_ms(llm_started_at),
+    )
     next_action = result.next_action
     if force_reconsider and next_action == "finish":
         next_action = "timeline_planner"
@@ -218,10 +238,11 @@ async def decision_agent_node(
         )
     )
     logger.info(
-        "[%s] Completed session=%s next_action=%s",
+        "[%s] Completed session=%s next_action=%s elapsed_ms=%s",
         node_name,
         state.get("session_id"),
         next_action,
+        _elapsed_ms(started_at),
     )
     await _emit_event(
         config,

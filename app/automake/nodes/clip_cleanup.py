@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from time import perf_counter
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -37,6 +38,10 @@ _PROMPT_ENTITY_STOPWORDS = {
 
 def _trace(message: str) -> None:
     print(f"[TRACE][clip_cleanup] {message}", flush=True)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((perf_counter() - started_at) * 1000)
 
 
 def _get_configurable(config: RunnableConfig | None) -> dict[str, Any]:
@@ -205,6 +210,7 @@ def _pause_ranges_from_words(
 
 
 async def _clip_context(state: SessionGraphState) -> list[dict[str, Any]]:
+    started_at = perf_counter()
     clip_context: list[dict[str, Any]] = []
     prompt_entities = _prompt_entity_terms(state.get("user_prompt", ""))
     for clip in state.get("clips", []):
@@ -214,7 +220,21 @@ async def _clip_context(state: SessionGraphState) -> list[dict[str, Any]]:
         pause_ranges: list[dict[str, Any]] = []
         cache_key = clip.get("transcript_cache_key")
         if cache_key:
+            cache_started_at = perf_counter()
+            logger.info(
+                "[clip_cleanup] Transcript cache fetch starting session=%s clip_id=%s key=%s",
+                state.get("session_id"),
+                clip.get("clip_id"),
+                cache_key,
+            )
             cached = await get_cached_transcript(cache_key)
+            logger.info(
+                "[clip_cleanup] Transcript cache fetch completed session=%s clip_id=%s hit=%s elapsed_ms=%s",
+                state.get("session_id"),
+                clip.get("clip_id"),
+                isinstance(cached, dict),
+                _elapsed_ms(cache_started_at),
+            )
             if isinstance(cached, dict):
                 prompt_entity_hits = _extract_prompt_entity_hits(cached, prompt_entities)
                 transcript_excerpt = _transcript_excerpt_with_hits(
@@ -234,6 +254,13 @@ async def _clip_context(state: SessionGraphState) -> list[dict[str, Any]]:
                 "prompt_entity_hits": prompt_entity_hits[:20],
             }
         )
+    logger.info(
+        "[clip_cleanup] Clip context built session=%s clips=%s prompt_entities=%s elapsed_ms=%s",
+        state.get("session_id"),
+        len(clip_context),
+        prompt_entities,
+        _elapsed_ms(started_at),
+    )
     return clip_context
 
 
@@ -338,6 +365,7 @@ def _build_clip_ranges_with_change_flag(
 async def clip_cleanup_node(
     state: SessionGraphState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
+    started_at = perf_counter()
     node_name = "clip_cleanup"
     logger.info("[%s] Starting session=%s", node_name, state.get("session_id"))
     _trace(
@@ -355,6 +383,17 @@ async def clip_cleanup_node(
     )
 
     llm = _get_llm(config).with_structured_output(ClipCleanupOutput)
+    context_started_at = perf_counter()
+    clip_context = await _clip_context(state)
+    logger.info(
+        "[%s] LLM invoke starting session=%s target_clip_ids=%s clip_context=%s context_elapsed_ms=%s",
+        node_name,
+        state.get("session_id"),
+        target_clip_ids,
+        len(clip_context),
+        _elapsed_ms(context_started_at),
+    )
+    llm_started_at = perf_counter()
     result = await llm.ainvoke(
         [
             (
@@ -379,7 +418,7 @@ async def clip_cleanup_node(
                 f"Edit plan: {json.dumps(state.get('edit_plan'))}\n"
                 f"Prior cleanup plan: {json.dumps(state.get('cleanup_plan'))}\n"
                 f"Prior timeline: {json.dumps(state.get('timeline'))}\n"
-                f"Clip context: {json.dumps(await _clip_context(state))}\n"
+                f"Clip context: {json.dumps(clip_context)}\n"
                 "Treat prompt_entity_hits as high-signal evidence for speaker/name matches when present.\n"
                 "Treat word_timeline_excerpt and pause_ranges as high-signal evidence for localizing exact cut boundaries.\n"
                 "If iteration count > 0, treat prior plans/timeline as the baseline draft and infer "
@@ -405,6 +444,12 @@ async def clip_cleanup_node(
             ),
         ]
     )
+    logger.info(
+        "[%s] LLM invoke completed session=%s elapsed_ms=%s",
+        node_name,
+        state.get("session_id"),
+        _elapsed_ms(llm_started_at),
+    )
 
     cleanup_plan = result.model_dump()
     edit_plan = dict(state.get("edit_plan") or {})
@@ -426,11 +471,12 @@ async def clip_cleanup_node(
     )
 
     logger.info(
-        "[%s] Completed session=%s selected=%d dropped=%d",
+        "[%s] Completed session=%s selected=%d dropped=%d elapsed_ms=%s",
         node_name,
         state.get("session_id"),
         len(result.selected_clip_ids),
         len(result.dropped_clip_ids),
+        _elapsed_ms(started_at),
     )
     await _emit_event(
         config,

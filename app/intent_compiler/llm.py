@@ -5,6 +5,7 @@ import json
 import logging
 from math import sqrt
 import re
+from time import perf_counter
 from typing import Any, Protocol
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -36,6 +37,10 @@ EFFECT_EMBEDDING_MODEL = "text-embedding-3-small"
 logger = logging.getLogger(__name__)
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return round((perf_counter() - started_at) * 1000)
+
+
 class EffectEmbeddingClient(Protocol):
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         ...
@@ -59,7 +64,13 @@ class IntentLLMCompiler:
 
     async def make_semantic_plan(self, prompt: str, context: IntentCompilerContext) -> SemanticEditPlan:
         llm = self.llm.with_structured_output(SemanticEditPlan, method="function_calling")
-        return await llm.ainvoke(
+        started_at = perf_counter()
+        logger.info(
+            "[intent-compiler] Semantic planner LLM invoke starting prompt_chars=%s transcript_contexts=%s",
+            len(prompt),
+            len(context.transcriptContextsByClipId),
+        )
+        result = await llm.ainvoke(
             [
                 (
                     "system",
@@ -71,6 +82,13 @@ class IntentLLMCompiler:
                 ("human", self._semantic_prompt(prompt, context)),
             ]
         )
+        logger.info(
+            "[intent-compiler] Semantic planner LLM invoke completed operations=%s effect_requests=%s elapsed_ms=%s",
+            len(result.operations),
+            len(result.effectRequests),
+            _elapsed_ms(started_at),
+        )
+        return result
 
     async def plan_experimental_effects(
         self,
@@ -81,7 +99,13 @@ class IntentLLMCompiler:
         context: IntentCompilerContext,
     ) -> ExperimentalEffectPlan:
         llm = self.llm.with_structured_output(ExperimentalEffectPlan, method="function_calling")
-        return await llm.ainvoke(
+        started_at = perf_counter()
+        logger.info(
+            "[intent-compiler] Effect planner LLM invoke starting intent=%r capabilities=%s",
+            effect_request.intent,
+            [cap.capability.operation for cap in relevant_capabilities],
+        )
+        result = await llm.ainvoke(
             [
                 (
                     "system",
@@ -100,6 +124,13 @@ class IntentLLMCompiler:
                 ),
             ]
         )
+        logger.info(
+            "[intent-compiler] Effect planner LLM invoke completed intent=%r operations=%s elapsed_ms=%s",
+            effect_request.intent,
+            len(result.operations),
+            _elapsed_ms(started_at),
+        )
+        return result
 
     def _semantic_prompt(self, prompt: str, context: IntentCompilerContext) -> str:
         return (
@@ -209,6 +240,7 @@ class IntentCompilerService:
         context: IntentCompilerContext,
         event_handler: IntentEventHandler | None = None,
     ) -> IntentCompileResult:
+        started_at = perf_counter()
         _log_intent_compile_incoming_context(prompt=prompt, context=context)
         await _emit(event_handler, {"type": "planner_started", "status": "Parsing prompt."})
         semantic_plan = await self.llm_compiler.make_semantic_plan(prompt, context)
@@ -224,13 +256,31 @@ class IntentCompilerService:
 
         effect_operations: list[ExperimentalEffectOperation] = []
         warnings: list[IntentCompileWarning] = []
-        for effect_request in semantic_plan.effectRequests:
+        for index, effect_request in enumerate(semantic_plan.effectRequests, start=1):
+            effect_started_at = perf_counter()
+            logger.info(
+                "[intent-compiler] Effect request starting index=%s total=%s intent=%r",
+                index,
+                len(semantic_plan.effectRequests),
+                effect_request.intent,
+            )
             try:
                 relevant = await self._relevant_capabilities(effect_request)
             except Exception:
+                logger.exception(
+                    "[intent-compiler] Capability retrieval failed index=%s intent=%r",
+                    index,
+                    effect_request.intent,
+                )
                 warnings.append(IntentCompileWarning.embeddingUnavailable)
                 continue
             if not relevant:
+                logger.warning(
+                    "[intent-compiler] No relevant capabilities index=%s intent=%r elapsed_ms=%s",
+                    index,
+                    effect_request.intent,
+                    _elapsed_ms(effect_started_at),
+                )
                 warnings.append(IntentCompileWarning.unsupportedIntent)
                 continue
             await _emit(
@@ -259,6 +309,13 @@ class IntentCompilerService:
                     "operations": [operation.model_dump() for operation in validated_operations],
                 },
             )
+            logger.info(
+                "[intent-compiler] Effect request completed index=%s intent=%r operations=%s elapsed_ms=%s",
+                index,
+                effect_request.intent,
+                len(validated_operations),
+                _elapsed_ms(effect_started_at),
+            )
 
         merged_plan = SemanticEditPlan(
             operations=semantic_plan.operations,
@@ -278,18 +335,40 @@ class IntentCompilerService:
                 "warnings": [warning.value for warning in result.warnings],
             },
         )
+        logger.info(
+            "[intent-compiler] Compile completed actions=%s experimental_effects=%s warnings=%s elapsed_ms=%s",
+            len(result.actions),
+            len(result.experimentalEffectOperations),
+            [warning.value for warning in result.warnings],
+            _elapsed_ms(started_at),
+        )
         return result
 
     async def _relevant_capabilities(
         self,
         effect_request: SemanticEffectRequest,
     ) -> list[RelevantEffectCapability]:
+        started_at = perf_counter()
         query_parts = [effect_request.sourceText, effect_request.intent or "", *effect_request.attributes]
         query = " ".join(part for part in query_parts if part).strip()
         if not query or not self.capabilities:
+            logger.info(
+                "[intent-compiler] Capability retrieval skipped intent=%r reason=empty_query_or_capabilities",
+                effect_request.intent,
+            )
             return []
 
+        logger.info(
+            "[intent-compiler] Capability query embedding starting intent=%r query_chars=%s",
+            effect_request.intent,
+            len(query),
+        )
         query_embedding = (await self.embedding_client.aembed_documents([query]))[0]
+        logger.info(
+            "[intent-compiler] Capability query embedding completed intent=%r elapsed_ms=%s",
+            effect_request.intent,
+            _elapsed_ms(started_at),
+        )
         capability_embeddings = await self._capability_embeddings()
         scored = [
             RelevantEffectCapability(
@@ -298,15 +377,30 @@ class IntentCompilerService:
             )
             for capability, capability_embedding in zip(self.capabilities, capability_embeddings, strict=True)
         ]
-        return sorted(scored, key=lambda item: item.score, reverse=True)[:5]
+        relevant = sorted(scored, key=lambda item: item.score, reverse=True)[:5]
+        logger.info(
+            "[intent-compiler] Capability retrieval completed intent=%r relevant=%s elapsed_ms=%s",
+            effect_request.intent,
+            [cap.capability.operation for cap in relevant],
+            _elapsed_ms(started_at),
+        )
+        return relevant
 
     async def _capability_embeddings(self) -> list[list[float]]:
         cache_key = tuple(_capability_embedding_text(capability) for capability in self.capabilities)
         if self._capability_embedding_cache and self._capability_embedding_cache[0] == cache_key:
+            logger.info("[intent-compiler] Capability embedding cache hit count=%s", len(cache_key))
             return self._capability_embedding_cache[1]
 
+        started_at = perf_counter()
+        logger.info("[intent-compiler] Capability embedding batch starting count=%s", len(cache_key))
         embeddings = await self.embedding_client.aembed_documents(list(cache_key))
         self._capability_embedding_cache = (cache_key, embeddings)
+        logger.info(
+            "[intent-compiler] Capability embedding batch completed count=%s elapsed_ms=%s",
+            len(cache_key),
+            _elapsed_ms(started_at),
+        )
         return embeddings
 
     @staticmethod

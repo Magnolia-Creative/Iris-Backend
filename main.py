@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 import json
 import logging
+from time import perf_counter
 from typing import Any
 from typing import Literal
 
@@ -84,6 +85,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((perf_counter() - started_at) * 1000)
 
 
 class ClipCreate(BaseModel):
@@ -401,6 +406,7 @@ async def create_intent_run_endpoint(
     principal: ClerkPrincipal = Depends(require_clerk_user),
     db: AsyncSession = Depends(get_db),
 ):
+    started_at = perf_counter()
     logger.info(
         "[intent-runs] Create requested prompt_chars=%s context=%s",
         len(payload.prompt),
@@ -408,19 +414,36 @@ async def create_intent_run_endpoint(
     )
     project_id = _context_id(payload.context.projectId)
     if project_id is not None:
+        ownership_started_at = perf_counter()
+        logger.info("[intent-runs] Project ownership check starting project_id=%s", project_id)
         await require_owned_project(db, project_id=project_id, principal=principal)
+        logger.info(
+            "[intent-runs] Project ownership check completed project_id=%s elapsed_ms=%s",
+            project_id,
+            _elapsed_ms(ownership_started_at),
+        )
     session_id = _context_id(payload.context.sessionId)
     if session_id is not None:
+        ownership_started_at = perf_counter()
+        logger.info("[intent-runs] Session ownership check starting session_id=%s", session_id)
         await require_owned_session(db, session_id=session_id, principal=principal)
+        logger.info(
+            "[intent-runs] Session ownership check completed session_id=%s elapsed_ms=%s",
+            session_id,
+            _elapsed_ms(ownership_started_at),
+        )
+    hydration_started_at = perf_counter()
+    logger.info("[intent-runs] Context hydration starting prompt_chars=%s", len(payload.prompt))
     context, hydration_meta = await prepare_intent_transcript_context(
         prompt=payload.prompt,
         context=payload.context,
         db=db,
     )
     logger.info(
-        "[intent-runs] Context hydrated prompt_chars=%s context=%s",
+        "[intent-runs] Context hydrated prompt_chars=%s context=%s elapsed_ms=%s",
         len(payload.prompt),
         _intent_context_log_summary(context, hydration=hydration_meta),
+        _elapsed_ms(hydration_started_at),
     )
     run = await create_intent_run(
         owner_user_id=principal.user_id,
@@ -433,9 +456,10 @@ async def create_intent_run_endpoint(
         1,
     ).replace("https://", "wss://", 1)
     logger.info(
-        "[intent-runs] Created run=%s websocket_url=%s",
+        "[intent-runs] Created run=%s websocket_url=%s elapsed_ms=%s",
         run.run_id,
         websocket_url,
+        _elapsed_ms(started_at),
     )
     return {"run_id": run.run_id, "websocket_url": websocket_url}
 
@@ -594,21 +618,46 @@ async def session_websocket(
     session_id: int,
     db: AsyncSession = Depends(get_db),
 ):
+    websocket_started_at = perf_counter()
+    logger.info("[ws] Session websocket auth starting session=%s", session_id)
     principal = await require_clerk_websocket_user(websocket)
+    logger.info("[ws] Session websocket ownership check starting session=%s user=%s", session_id, principal.user_id)
     await require_owned_session(db, session_id=session_id, principal=principal)
     await websocket.accept()
+    logger.info("[ws] Session websocket accepted session=%s user=%s", session_id, principal.user_id)
 
     async def send_event(payload: dict[str, Any]) -> None:
         tracked_payload = record_session_event(str(session_id), payload)
+        event_type = str(tracked_payload.get("type") or "<missing>")
+        logger.info(
+            "[ws] Sending event session=%s type=%s keys=%s",
+            session_id,
+            event_type,
+            sorted(tracked_payload),
+        )
         await websocket.send_text(json.dumps(tracked_payload))
 
     try:
         raw_message = await websocket.receive_json()
+        logger.info(
+            "[ws] Received initial payload session=%s type=%s keys=%s",
+            session_id,
+            raw_message.get("type") if isinstance(raw_message, dict) else None,
+            sorted(raw_message) if isinstance(raw_message, dict) else None,
+        )
         start_payload = WebSocketSessionStartPayload.model_validate(raw_message)
+        persisted_started_at = perf_counter()
+        logger.info("[ws] Loading persisted session data session=%s", session_id)
         persisted_session_data = await get_persisted_session_data(
             db=db,
             session_id=session_id,
             include_ingest_details=True,
+        )
+        logger.info(
+            "[ws] Loaded persisted session data session=%s found=%s elapsed_ms=%s",
+            session_id,
+            persisted_session_data is not None,
+            _elapsed_ms(persisted_started_at),
         )
         if persisted_session_data is None:
             await send_event(
@@ -637,7 +686,21 @@ async def session_websocket(
             session_payload=persisted_session_data,
             user_prompt=start_payload.user_prompt,
         )
+        logger.info(
+            "[ws] Initial state built session=%s clips=%s prompt_chars=%s",
+            session_id,
+            len(initial_state.get("clips", [])),
+            len(start_payload.user_prompt),
+        )
+        persisted_graph_started_at = perf_counter()
+        logger.info("[ws] Loading persisted graph state session=%s", session_id)
         persisted_graph_state = await get_persisted_session_graph_state(db=db, session_id=session_id)
+        logger.info(
+            "[ws] Loaded persisted graph state session=%s found=%s elapsed_ms=%s",
+            session_id,
+            persisted_graph_state is not None,
+            _elapsed_ms(persisted_graph_started_at),
+        )
         initialize_session_debug(
             str(session_id),
             persisted_graph_state or initial_state,
@@ -679,12 +742,14 @@ async def session_websocket(
                     }
                 )
             else:
+                logger.info("[ws] Running persisted graph state session=%s", session_id)
                 await run_session_until_pause(
                     state=persisted_graph_state,
                     db=db,
                     event_handler=send_event,
                 )
         else:
+            logger.info("[ws] Running new graph state session=%s", session_id)
             await run_session_until_pause(
                 state=initial_state,
                 db=db,
@@ -694,6 +759,12 @@ async def session_websocket(
         while True:
             raw_message = await websocket.receive_json()
             message_type = raw_message.get("type")
+            logger.info(
+                "[ws] Received payload session=%s type=%s keys=%s",
+                session_id,
+                message_type,
+                sorted(raw_message) if isinstance(raw_message, dict) else None,
+            )
             if message_type == "reprompt":
                 try:
                     reprompt_payload = WebSocketRepromptPayload.model_validate(raw_message)
@@ -724,11 +795,22 @@ async def session_websocket(
                         event_handler=send_event,
                     )
                     continue
+                resume_started_at = perf_counter()
+                logger.info(
+                    "[ws] Resuming from reprompt session=%s prompt_chars=%s",
+                    session_id,
+                    len(reprompt_payload.prompt),
+                )
                 await resume_session_from_reprompt(
                     session_id=str(session_id),
                     prompt=reprompt_payload.prompt,
                     db=db,
                     event_handler=send_event,
+                )
+                logger.info(
+                    "[ws] Reprompt completed session=%s elapsed_ms=%s",
+                    session_id,
+                    _elapsed_ms(resume_started_at),
                 )
                 continue
 
@@ -756,7 +838,7 @@ async def session_websocket(
         )
         await websocket.close(code=1003)
     except WebSocketDisconnect:
-        logger.info("[ws] Client disconnected session=%s", session_id)
+        logger.info("[ws] Client disconnected session=%s elapsed_ms=%s", session_id, _elapsed_ms(websocket_started_at))
     except Exception:
         logger.exception("[ws] Session websocket failed session=%s", session_id)
         await send_event(
@@ -774,10 +856,20 @@ async def intent_run_websocket(
     websocket: WebSocket,
     run_id: str,
 ) -> None:
+    websocket_started_at = perf_counter()
+    logger.info("[intent-runs] WebSocket auth starting run=%s", run_id)
     principal = await require_clerk_websocket_user(websocket)
     await websocket.accept()
-    logger.info("[intent-runs] WebSocket accepted run=%s", run_id)
+    logger.info("[intent-runs] WebSocket accepted run=%s user=%s", run_id, principal.user_id)
+    lookup_started_at = perf_counter()
+    logger.info("[intent-runs] Run lookup starting run=%s", run_id)
     run = await get_intent_run(run_id)
+    logger.info(
+        "[intent-runs] Run lookup completed run=%s found=%s elapsed_ms=%s",
+        run_id,
+        run is not None,
+        _elapsed_ms(lookup_started_at),
+    )
     if run is None:
         logger.warning("[intent-runs] WebSocket run not found run=%s", run_id)
         await websocket.send_text(
@@ -817,6 +909,7 @@ async def intent_run_websocket(
         await websocket.send_text(message)
 
     try:
+        compile_started_at = perf_counter()
         logger.info(
             "[intent-runs] Compile starting run=%s prompt_chars=%s context=%s",
             run_id,
@@ -845,9 +938,14 @@ async def intent_run_websocket(
             }
         )
         await websocket.close()
-        logger.info("[intent-runs] WebSocket closed normally run=%s", run_id)
+        logger.info(
+            "[intent-runs] WebSocket closed normally run=%s compile_elapsed_ms=%s total_elapsed_ms=%s",
+            run_id,
+            _elapsed_ms(compile_started_at),
+            _elapsed_ms(websocket_started_at),
+        )
     except WebSocketDisconnect:
-        logger.info("[intent-runs] Client disconnected run=%s", run_id)
+        logger.info("[intent-runs] Client disconnected run=%s elapsed_ms=%s", run_id, _elapsed_ms(websocket_started_at))
     except Exception:
         logger.exception("[intent-runs] Intent run failed run=%s", run_id)
         with suppress(WebSocketDisconnect, OSError, RuntimeError):
