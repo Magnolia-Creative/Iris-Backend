@@ -69,6 +69,8 @@ from app.intent_compiler.models import IntentCompileRequest, IntentCompilerConte
 from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
 from app.intent_compiler.transcripts import prepare_intent_transcript_context
 from app.intent_compiler.voice import stream_voice_intent
+from app.ui_workspace.models import UIWorkspacePlanRequest, UIWorkspacePlanResponse
+from app.ui_workspace.planner import UIWorkspacePlannerService
 from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import (
     get_clip_captions_payload,
@@ -462,6 +464,42 @@ async def create_intent_run_endpoint(
         _elapsed_ms(started_at),
     )
     return {"run_id": run.run_id, "websocket_url": websocket_url}
+
+
+@app.post("/projects/{project_id}/ui-workspace-plan")
+async def create_ui_workspace_plan(
+    project_id: int,
+    payload: UIWorkspacePlanRequest,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
+    db: AsyncSession = Depends(get_db),
+):
+    started_at = perf_counter()
+    await require_owned_project(db, project_id=project_id, principal=principal)
+    context_project_id = _context_id(payload.context.projectId)
+    if context_project_id is not None and context_project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="context.projectId must match the route project_id when provided.",
+        )
+    session_id = _context_id(payload.context.sessionId)
+    if session_id is not None:
+        await require_owned_session(db, session_id=session_id, principal=principal)
+
+    logger.info(
+        "[ui-workspace] Plan requested project_id=%s prompt_chars=%s",
+        project_id,
+        len(payload.prompt),
+    )
+    service = UIWorkspacePlannerService(use_llm=False)
+    plan = await service.plan(payload)
+    logger.info(
+        "[ui-workspace] Plan completed project_id=%s workspace_id=%s slices=%s elapsed_ms=%s",
+        project_id,
+        plan.workspaceId,
+        len(plan.intentSlices),
+        _elapsed_ms(started_at),
+    )
+    return UIWorkspacePlanResponse(plan=plan)
 
 
 @app.post("/projects/{project_id}/clips/process")
