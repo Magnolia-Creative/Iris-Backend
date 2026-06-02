@@ -20,6 +20,7 @@ def _env_list(name: str) -> list[str]:
 
 
 CLERK_INSTANCE_URLS = {
+    "local": "https://ethical-adder-19.clerk.accounts.dev",
     "development": "https://ethical-adder-19.clerk.accounts.dev",
     "dev": "https://ethical-adder-19.clerk.accounts.dev",
     "test": "https://ethical-adder-19.clerk.accounts.dev",
@@ -34,7 +35,8 @@ def _clerk_frontend_api_url() -> str:
     if explicit_url:
         return explicit_url.rstrip("/")
 
-    instance = os.getenv("CLERK_INSTANCE", "production").strip().lower()
+    instance = os.getenv("CLERK_INSTANCE") or os.getenv("IRIS_ENV", "production")
+    instance = instance.strip().lower()
     return CLERK_INSTANCE_URLS.get(instance, CLERK_INSTANCE_URLS["production"])
 
 
@@ -48,6 +50,7 @@ class Settings:
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.intent_openai_model = os.getenv("INTENT_OPENAI_MODEL", "gpt-5.4-nano")
+        self.iris_env = os.getenv("IRIS_ENV", "production").strip().lower()
         self.transcript_cache_ttl_seconds = int(
             os.getenv("TRANSCRIPT_CACHE_TTL_SECONDS", "3600")
         )
