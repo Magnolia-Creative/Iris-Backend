@@ -19,6 +19,25 @@ def _env_list(name: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+CLERK_INSTANCE_URLS = {
+    "development": "https://ethical-adder-19.clerk.accounts.dev",
+    "dev": "https://ethical-adder-19.clerk.accounts.dev",
+    "test": "https://ethical-adder-19.clerk.accounts.dev",
+    "production": "https://clerk.irisvideo.app",
+    "prod": "https://clerk.irisvideo.app",
+    "live": "https://clerk.irisvideo.app",
+}
+
+
+def _clerk_frontend_api_url() -> str:
+    explicit_url = os.getenv("CLERK_FRONTEND_API_URL")
+    if explicit_url:
+        return explicit_url.rstrip("/")
+
+    instance = os.getenv("CLERK_INSTANCE", "production").strip().lower()
+    return CLERK_INSTANCE_URLS.get(instance, CLERK_INSTANCE_URLS["production"])
+
+
 class Settings:
     def __init__(self) -> None:
         database_url = os.getenv("DATABASE_URL")
@@ -49,10 +68,7 @@ class Settings:
         self.outbound_ssl_cafile = os.getenv("SSL_CERT_FILE") or os.getenv("SSL_CA_BUNDLE")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.semantic_indexing_enabled = _env_bool("SEMANTIC_INDEXING_ENABLED", True)
-        self.clerk_frontend_api_url = os.getenv(
-            "CLERK_FRONTEND_API_URL",
-            "https://clerk.irisvideo.app",
-        ).rstrip("/")
+        self.clerk_frontend_api_url = _clerk_frontend_api_url()
         self.clerk_jwks_url = os.getenv(
             "CLERK_JWKS_URL",
             f"{self.clerk_frontend_api_url}/.well-known/jwks.json",
