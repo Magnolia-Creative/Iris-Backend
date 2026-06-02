@@ -205,6 +205,56 @@ def test_ui_workspace_plan_accepts_swift_shaped_vintage_intent_result():
     assert "toolbar.parameterControls" in toolbar_widget_ids
 
 
+def test_ui_workspace_plan_route_accepts_swift_shaped_vintage_intent_result():
+    main.app.router.lifespan_context = _noop_lifespan
+    intent_result = {
+        "actions": [
+            {
+                "action_id": "8025399e-5821-45ae-824e-1ac3f406ead2",
+                "timeline_id": "timeline-test",
+                "created_at": "2026-06-01T22:30:04Z",
+                "type": "UPDATE_EFFECT_PARAMS",
+                "payload": {
+                    "updateClipColorFilter": {
+                        "clipId": "clip-b",
+                        "adjustments": {"temperature": 0.18},
+                    }
+                },
+            }
+        ],
+        "confidence": 0.85,
+        "source": "llm",
+        "unresolvedText": None,
+        "warnings": ["unsupportedAction"],
+        "needsClarification": False,
+        "experimentalEffectOperations": [
+            {
+                "operation": "addGrain",
+                "sourceText": "Apply a vintage effect.",
+                "confidence": 0.85,
+                "parameters": {"amount": 0.45},
+            }
+        ],
+    }
+    with patch("main.require_owned_project", new_callable=AsyncMock) as owned_project:
+        owned_project.return_value = object()
+        with TestClient(main.app) as client:
+            with patch(
+                "app.auth.clerk.require_clerk_user",
+                return_value=type("P", (), {"user_id": "user_test"})(),
+            ):
+                response = client.post(
+                    "/projects/1/ui-workspace-plan",
+                    json={
+                        "prompt": "Apply a vintage effect.",
+                        "context": _sample_context(projectId=1).model_dump(),
+                        "intentResult": intent_result,
+                    },
+                )
+    assert response.status_code == 200
+    assert response.json()["plan"]["workspaceId"] == "visual_style"
+
+
 def test_ui_workspace_plan_route_returns_plan():
     main.app.router.lifespan_context = _noop_lifespan
     with patch("main.require_owned_project", new_callable=AsyncMock) as owned_project:
