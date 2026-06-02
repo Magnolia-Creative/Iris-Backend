@@ -21,6 +21,8 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
@@ -209,6 +211,22 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    errors = exc.errors()
+    logger.warning(
+        "[validation] request=%s errors=%s",
+        request.url.path,
+        errors,
+    )
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[],
