@@ -68,6 +68,7 @@ def test_default_workspace_includes_timeline_and_prompt():
     )
     assert plan.isDefaultWorkspace is True
     assert plan.toolbar.showPromptBar is True
+    assert plan.toolbar.showNavigation is True
     widget_ids = _collect_widget_ids(plan.layout)
     assert "playback.viewer" in widget_ids
     assert "timeline.full" in widget_ids

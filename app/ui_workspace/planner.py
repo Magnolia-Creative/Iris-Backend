@@ -192,7 +192,7 @@ class DeterministicUIWorkspacePlanner:
                 ),
             ),
         ]
-        show_nav = editor.activeSpace in {"Import", "Export"} or editor.activeSpace is None
+        show_nav = True
         if editor.activeSpace == "Import":
             layout_children.append(
                 LayoutNode(
