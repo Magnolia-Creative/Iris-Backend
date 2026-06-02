@@ -145,6 +145,66 @@ def test_validator_rejects_unknown_widget():
     assert raised
 
 
+def test_ui_workspace_plan_accepts_swift_shaped_vintage_intent_result():
+    """Regression: iOS re-posts websocket intent results to ui-workspace-plan."""
+    intent_result = {
+        "actions": [
+            {
+                "action_id": "8025399e-5821-45ae-824e-1ac3f406ead2",
+                "timeline_id": "timeline-test",
+                "created_at": "2026-06-01T22:30:04Z",
+                "type": "UPDATE_EFFECT_PARAMS",
+                "payload": {
+                    "updateClipColorFilter": {
+                        "clipId": "clip-b",
+                        "adjustments": {
+                            "saturation": -0.25,
+                            "contrast": -0.15,
+                            "temperature": 0.18,
+                        },
+                    }
+                },
+                "group_id": None,
+            }
+        ],
+        "confidence": 0.85,
+        "source": "llm",
+        "unresolvedText": None,
+        "warnings": ["unsupportedAction"],
+        "needsClarification": False,
+        "experimentalEffectOperations": [
+            {
+                "operation": "addGrain",
+                "sourceText": "Apply a vintage effect.",
+                "intention": "add vintage film grain",
+                "target": {"type": "selectedClip", "clipId": None, "value": None, "track": None},
+                "confidence": 0.85,
+                "parameters": {"amount": 0.45},
+                "parameterNotes": {"amount": "Adds visible film grain."},
+            },
+            {
+                "operation": "setSaturation",
+                "sourceText": "Apply a vintage effect.",
+                "intention": "fade colors slightly",
+                "target": {"type": "selectedClip", "clipId": None, "value": None, "track": None},
+                "confidence": 0.85,
+                "parameters": {"value": -0.25},
+                "parameterNotes": {"value": "Desaturates the clip."},
+            },
+        ],
+    }
+    request = UIWorkspacePlanRequest(
+        prompt="Apply a vintage effect.",
+        context=_sample_context(projectId=1),
+        intentResult=IntentCompileResult.model_validate(intent_result),
+    )
+    plan = DeterministicUIWorkspacePlanner().plan(request)
+    assert plan.workspaceId == "visual_style"
+    assert plan.toolbar.showPromptBar is False
+    toolbar_widget_ids = [widget.widgetId for widget in plan.toolbar.widgets]
+    assert "toolbar.parameterControls" in toolbar_widget_ids
+
+
 def test_ui_workspace_plan_route_returns_plan():
     main.app.router.lifespan_context = _noop_lifespan
     with patch("main.require_owned_project", new_callable=AsyncMock) as owned_project:

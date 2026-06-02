@@ -3,6 +3,8 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -130,6 +132,19 @@ class ActionType(StrEnum):
     updateEffectParams = "UPDATE_EFFECT_PARAMS"
 
 
+def _coerce_action_created_at(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("created_at must be a number or ISO-8601 timestamp")
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        return datetime.fromisoformat(normalized).timestamp()
+    raise TypeError(f"Unsupported created_at type: {type(value)!r}")
+
+
 class Action(IntentCompilerBaseModel):
     actionId: str = Field(alias="action_id")
     timelineId: str = Field(alias="timeline_id")
@@ -137,6 +152,11 @@ class Action(IntentCompilerBaseModel):
     type: ActionType
     payload: dict[str, Any]
     groupId: str | None = Field(default=None, alias="group_id")
+
+    @field_validator("createdAt", mode="before")
+    @classmethod
+    def validate_created_at(cls, value: object) -> float:
+        return _coerce_action_created_at(value)
 
 
 class SemanticTrackReference(IntentCompilerBaseModel):
