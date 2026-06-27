@@ -11,8 +11,6 @@ from app.api.routes import (
     agent,
     health,
     projects,
-    realtime_ws,
-    session_ws,
     sources,
     transcriptions,
 )
@@ -56,6 +54,4 @@ def create_app() -> FastAPI:
     app.include_router(projects.router)
     app.include_router(sources.router)
     app.include_router(agent.router)
-    app.include_router(session_ws.router)
-    app.include_router(realtime_ws.router)
     return app

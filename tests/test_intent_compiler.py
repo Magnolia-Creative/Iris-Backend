@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 import main
-from app.api.routes import realtime_ws
+from app.api.routes import agent as agent_routes
 from app.auth import ClerkPrincipal
 from app.agent.intent.editing.capabilities import DEFAULT_EFFECT_CAPABILITIES
 from app.agent.intent.editing.compiler import IntentCompiler, action_execution_tier
@@ -1206,9 +1206,9 @@ def test_voice_intent_websocket_delegates_after_start(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(realtime_ws, "stream_voice_intent", fake_stream_voice_intent)
+    monkeypatch.setattr(agent_routes, "stream_voice_intent", fake_stream_voice_intent)
     monkeypatch.setattr(
-        realtime_ws,
+        agent_routes,
         "require_clerk_websocket_user",
         _fake_require_clerk_websocket_user,
     )
@@ -1216,10 +1216,37 @@ def test_voice_intent_websocket_delegates_after_start(monkeypatch):
     main.app.router.lifespan_context = _noop_lifespan
     try:
         with TestClient(main.app) as client:
-            with client.websocket_connect("/ws/intent/voice") as websocket:
+            with client.websocket_connect("/agent/voice/intent") as websocket:
                 websocket.send_json({"type": "start", "context": _sample_context()})
                 final = websocket.receive_json()
                 assert final["type"] == "intent_result"
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+
+
+def test_voice_transcribe_websocket_delegates_to_stream(monkeypatch):
+    async def fake_stream_transcription(websocket, *, model):
+        assert model == "gpt-4o-mini-transcribe"
+        await websocket.send_json({"type": "session_ready", "model": model})
+
+    monkeypatch.setattr(agent_routes, "stream_transcription", fake_stream_transcription)
+    monkeypatch.setattr(
+        agent_routes,
+        "require_clerk_websocket_user",
+        _fake_require_clerk_websocket_user,
+    )
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = _noop_lifespan
+    try:
+        with TestClient(main.app) as client:
+            with client.websocket_connect(
+                "/agent/voice/transcribe?model=gpt-4o-mini-transcribe"
+            ) as websocket:
+                ready = websocket.receive_json()
+                assert ready == {
+                    "type": "session_ready",
+                    "model": "gpt-4o-mini-transcribe",
+                }
     finally:
         main.app.router.lifespan_context = original_lifespan
 
