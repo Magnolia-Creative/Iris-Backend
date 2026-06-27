@@ -1,7 +1,7 @@
 import asyncio
 
-from app.automake.nodes.timeline_planner import _timeline_context
-from app.automake.nodes.timeline_validator import _validate_timeline
+from app.agent.automake.nodes.timeline_planner import _timeline_context
+from app.agent.automake.nodes.timeline_validator import _validate_timeline
 from app.services.session_state_builder import build_initial_state_from_session_payload
 
 

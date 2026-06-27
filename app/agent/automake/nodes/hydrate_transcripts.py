@@ -5,7 +5,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.automake.state import SessionGraphState
+from app.agent.automake.state import SessionGraphState
 from app.services.transcript_cache import cache_transcript, is_transcript_cached
 from app.services.transcript_store import get_transcript_payload
 

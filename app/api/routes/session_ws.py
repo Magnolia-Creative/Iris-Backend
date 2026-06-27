@@ -11,7 +11,7 @@ from app.api.schemas.sessions import WebSocketRepromptPayload, WebSocketSessionS
 from app.api.session_messages import is_timeline_approval_message
 from app.api.timing import elapsed_ms
 from app.auth import require_clerk_websocket_user, require_owned_session
-from app.automake.runtime import (
+from app.agent.automake.runtime import (
     approve_session_timeline,
     get_session_state,
     resume_session_from_reprompt,

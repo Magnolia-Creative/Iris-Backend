@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ClerkPrincipal, require_clerk_user, require_owned_session
-from app.automake.runtime import get_session_state
+from app.agent.automake.runtime import get_session_state
 from app.database import get_db
 from app.services.session_debug_store import build_session_debug_snapshot, initialize_session_debug
 from app.services.session_graph_state_store import get_persisted_session_graph_state

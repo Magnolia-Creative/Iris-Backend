@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import models
-from app.automake.state import SessionGraphState, normalize_session_graph_state
+from app.agent.automake.state import SessionGraphState, normalize_session_graph_state
 
 
 async def get_persisted_session_graph_state(

@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 
 from app.config import settings
-from app.automake.state import SessionGraphState, TimelinePlannerOutput
+from app.agent.automake.state import SessionGraphState, TimelinePlannerOutput
 from app.services.transcript_cache import get_cached_transcript
 
 

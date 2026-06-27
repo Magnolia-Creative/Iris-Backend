@@ -2,12 +2,12 @@ from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
 
-from app.automake.nodes.clip_cleanup import clip_cleanup_node
-from app.automake.nodes.decision import decision_agent_node
-from app.automake.nodes.hydrate_transcripts import hydrate_transcripts_node
-from app.automake.nodes.timeline_planner import timeline_planner_node
-from app.automake.nodes.timeline_validator import timeline_validator_node
-from app.automake.state import SessionGraphState
+from app.agent.automake.nodes.clip_cleanup import clip_cleanup_node
+from app.agent.automake.nodes.decision import decision_agent_node
+from app.agent.automake.nodes.hydrate_transcripts import hydrate_transcripts_node
+from app.agent.automake.nodes.timeline_planner import timeline_planner_node
+from app.agent.automake.nodes.timeline_validator import timeline_validator_node
+from app.agent.automake.state import SessionGraphState
 
 
 def _route_from_decision(state: SessionGraphState) -> str:

@@ -8,7 +8,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 
 from app.config import settings
-from app.automake.state import ClipCleanupOutput, SessionGraphState
+from app.agent.automake.state import ClipCleanupOutput, SessionGraphState
 from app.services.transcript_cache import get_cached_transcript
 
 

@@ -1,4 +1,4 @@
-from app.automake.state import SESSION_GRAPH_STATE_VERSION, normalize_session_graph_state
+from app.agent.automake.state import SESSION_GRAPH_STATE_VERSION, normalize_session_graph_state
 
 
 def test_normalize_session_graph_state_adds_version_and_defaults():
