@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.search import SearchMatch, search_response_dict
 from app.services import clip_embedding_store, gemini_embedding
 from app.services.semantic_constants import (
     CHUNK_TOP_K,
@@ -60,23 +61,27 @@ async def search_project_semantic(
 
     if not query.strip():
         logger.info("[semantic_search] empty query project_id=%s", project_id)
-        return {"matches": [], "query": query}
+        return search_response_dict(matches=[], query=query)
 
     if not gemini_embedding.gemini_configured():
         logger.info("[semantic_search] disabled project_id=%s reason=no_gemini_key", project_id)
-        return {"matches": [], "query": query, "disabled_reason": "GEMINI_API_KEY not set"}
+        return search_response_dict(
+            matches=[],
+            query=query,
+            disabled_reason="GEMINI_API_KEY not set",
+        )
 
     count = await clip_embedding_store.count_embeddings_for_project(db, project_id=project_id)
     logger.info("[semantic_search] project_id=%s embedding_row_count=%s", project_id, count)
     if count == 0:
         logger.info("[semantic_search] no index rows project_id=%s", project_id)
-        return {"matches": [], "query": query}
+        return search_response_dict(matches=[], query=query)
 
     try:
         qemb = await gemini_embedding.embed_text(query.strip())
     except Exception as exc:
         logger.warning("[semantic_search] query embed failed project_id=%s: %s", project_id, exc)
-        return {"matches": [], "query": query, "error": str(exc)}
+        return search_response_dict(matches=[], query=query, error=str(exc))
 
     logger.info(
         "[semantic_search] query embedded project_id=%s vector_dim=%s",
@@ -107,19 +112,18 @@ async def search_project_semantic(
     merged = merge_chunk_hits(hits, project_id=project_id)
     top = _select_top_matches_by_confidence_ratio(merged, limit=lim)
 
-    matches: list[dict[str, Any]] = []
-    for m in top:
-        matches.append(
-            {
-                "clip_id": m.clip_id,
-                "local_key": m.local_key,
-                "file_name": m.file_name,
-                "start_time_seconds": m.start_time_seconds,
-                "end_time_seconds": m.end_time_seconds,
-                "confidence": m.confidence,
-                "source": m.source,
-            }
+    matches = [
+        SearchMatch(
+            clip_id=m.clip_id,
+            local_key=m.local_key,
+            file_name=m.file_name,
+            start_time_seconds=m.start_time_seconds,
+            end_time_seconds=m.end_time_seconds,
+            confidence=m.confidence,
+            source=m.source,
         )
+        for m in top
+    ]
 
     logger.info(
         "[semantic_search] project_id=%s raw_nn_hits=%s merged_ranges=%s returned_matches=%s "
@@ -136,12 +140,12 @@ async def search_project_semantic(
             "[semantic_search] top_match project_id=%s clip_id=%s local_key=%s "
             "confidence=%.4f source=%s time=%.2f-%.2f",
             project_id,
-            first["clip_id"],
-            first["local_key"],
-            float(first["confidence"]),
-            first["source"],
-            float(first["start_time_seconds"]),
-            float(first["end_time_seconds"]),
+            first.clip_id,
+            first.local_key,
+            first.confidence,
+            first.source,
+            first.start_time_seconds,
+            first.end_time_seconds,
         )
 
-    return {"matches": matches, "query": query}
+    return search_response_dict(matches=matches, query=query)

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import models
+from app.domains.search import SearchMatch, search_response_dict
 from app.services.semantic_constants import RESULTS_LIMIT
 
 logger = logging.getLogger(__name__)
@@ -73,12 +74,12 @@ async def search_project_transcript(
     qstrip = (query or "").strip()
     if not qstrip:
         logger.info("[transcript_search] empty query project_id=%s", project_id)
-        return {"matches": [], "query": query}
+        return search_response_dict(matches=[], query=query)
 
     query_norm = _normalize_words(qstrip)
     query_terms = set(query_norm.split()) if query_norm else set()
     if not query_terms:
-        return {"matches": [], "query": query}
+        return search_response_dict(matches=[], query=query)
 
     stmt = (
         select(
@@ -94,7 +95,7 @@ async def search_project_transcript(
     result = await db.execute(stmt)
     rows = result.all()
 
-    raw_hits: list[tuple[float, int, float, dict[str, Any]]] = []
+    raw_hits: list[tuple[float, int, float, SearchMatch]] = []
     for clip_id, local_key, file_name, segments in rows:
         if not isinstance(segments, list):
             continue
@@ -120,21 +121,21 @@ async def search_project_transcript(
                     -conf,
                     int(clip_id),
                     start_s,
-                    {
-                        "clip_id": int(clip_id),
-                        "local_key": lk,
-                        "file_name": fn,
-                        "start_time_seconds": start_s,
-                        "end_time_seconds": end_s,
-                        "confidence": conf,
-                        "source": "audio",
-                        "match_text": text.strip(),
-                    },
+                    SearchMatch(
+                        clip_id=int(clip_id),
+                        local_key=lk,
+                        file_name=fn,
+                        start_time_seconds=start_s,
+                        end_time_seconds=end_s,
+                        confidence=conf,
+                        source="audio",
+                        match_text=text.strip(),
+                    ),
                 )
             )
 
     raw_hits.sort(key=lambda t: (t[0], t[1], t[2]))
-    matches: list[dict[str, Any]] = [t[3] for t in raw_hits[:lim]]
+    matches: list[SearchMatch] = [t[3] for t in raw_hits[:lim]]
 
     logger.info(
         "[transcript_search] project_id=%s query_len=%s limit=%s hits=%s returned=%s",
@@ -144,4 +145,4 @@ async def search_project_transcript(
         len(raw_hits),
         len(matches),
     )
-    return {"matches": matches, "query": query}
+    return search_response_dict(matches=matches, query=query)
