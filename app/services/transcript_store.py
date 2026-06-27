@@ -7,6 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import models
+from app.domains.transcripts import (
+    captions_payload_from_transcript,
+    sentences_from_transcript_payload,
+)
 from app.services.clip_task_registry import clip_task_registry
 from app.services.sentence_transcript_payload import intent_jsonb_from_sentence_api_result
 
@@ -53,22 +57,10 @@ async def insert_sentence_upload_transcript(db: AsyncSession, result: dict[str, 
 
 def _sentences_from_transcript_payload(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Map persisted `segments` to API `sentences` (same structure, normalized copy)."""
-    raw = transcript_payload.get("segments")
-    if not isinstance(raw, list):
-        return []
-    sentences: list[dict[str, Any]] = []
-    for seg in raw:
-        if not isinstance(seg, dict):
-            continue
-        item: dict[str, Any] = {}
-        for key in ("text", "start", "end", "confidence"):
-            if key in seg:
-                item[key] = seg[key]
-        words = seg.get("words")
-        if isinstance(words, list):
-            item["words"] = words
-        sentences.append(item)
-    return sentences
+    return [
+        sentence.model_dump(exclude_none=True)
+        for sentence in sentences_from_transcript_payload(transcript_payload)
+    ]
 
 
 async def get_clip_captions_payload(
@@ -134,31 +126,17 @@ async def get_clip_captions_payload(
         }
 
     transcript_payload = transcript_record.transcript
-    sentences = _sentences_from_transcript_payload(transcript_payload)
-    full_text = transcript_payload.get("full_text")
-    if not isinstance(full_text, str):
-        full_text = ""
-
-    payload: dict[str, Any] = {
-        "project_id": project_id,
-        "local_key": local_key,
-        "clip_id": int(clip.id),
-        "transcript_id": int(transcript_record.id),
-        "processing_status": clip.processing_status,
-        "full_text": full_text,
-        "sentences": sentences,
-        "meta": {
-            "source_file": transcript_payload.get("source_file"),
-            "mime_type": transcript_payload.get("mime_type"),
-            "extension": transcript_payload.get("extension"),
-            "clip_meta": transcript_payload.get("clip_meta")
-            if isinstance(transcript_payload.get("clip_meta"), dict)
-            else {},
-            "video_report": transcript_payload.get("video_report")
-            if isinstance(transcript_payload.get("video_report"), dict)
-            else {},
-        },
-    }
+    payload_model = captions_payload_from_transcript(
+        project_id=project_id,
+        local_key=local_key,
+        clip_id=int(clip.id),
+        transcript_id=int(transcript_record.id),
+        processing_status=clip.processing_status,
+        transcript_payload=transcript_payload,
+    )
+    payload = payload_model.model_dump(exclude_none=True)
+    sentences = payload_model.sentences
+    full_text = payload_model.full_text
     logger.info(
         "[captions-store] transcript ready project_id=%s local_key=%s clip_id=%s transcript_id=%s processing_status=%s sentence_count=%s full_text_chars=%s",
         project_id,
