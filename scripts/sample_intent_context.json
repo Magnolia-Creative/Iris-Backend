@@ -1,0 +1,92 @@
+{
+  "timelineId": "timeline-test",
+  "selectedClipId": "clip-sample",
+  "selectedTrackId": "track-video",
+  "selectedRange": null,
+  "playheadTimeUs": 4500000,
+  "clipsById": {
+    "clip-sample": {
+      "clip_id": "clip-sample",
+      "track_id": "track-video",
+      "media_id": "media-sample",
+      "source_range": {
+        "start": 0,
+        "end": 9000000
+      },
+      "timeline_range": {
+        "start": 0,
+        "end": 9000000
+      }
+    }
+  },
+  "orderedClipIdsByTrackId": {
+    "track-video": [
+      "clip-sample"
+    ]
+  },
+  "transcriptContextsByClipId": {
+    "clip-sample": {
+      "clipId": "clip-sample",
+      "transcriptId": null,
+      "cacheKey": null,
+      "fullText": "Here is the intro. There is a long pause. Then the clean sentence continues.",
+      "words": [
+        {
+          "word": "Here",
+          "startUs": 0,
+          "endUs": 300000
+        },
+        {
+          "word": "is",
+          "startUs": 300000,
+          "endUs": 500000
+        },
+        {
+          "word": "the",
+          "startUs": 500000,
+          "endUs": 650000
+        },
+        {
+          "word": "intro",
+          "startUs": 650000,
+          "endUs": 1100000
+        },
+        {
+          "word": "Then",
+          "startUs": 4200000,
+          "endUs": 4500000
+        },
+        {
+          "word": "the",
+          "startUs": 4500000,
+          "endUs": 4650000
+        },
+        {
+          "word": "clean",
+          "startUs": 4650000,
+          "endUs": 5000000
+        },
+        {
+          "word": "sentence",
+          "startUs": 5000000,
+          "endUs": 5600000
+        },
+        {
+          "word": "continues",
+          "startUs": 5600000,
+          "endUs": 6300000
+        }
+      ],
+      "pauseRanges": [
+        {
+          "startUs": 1100000,
+          "endUs": 4200000,
+          "durationUs": 3100000,
+          "beforeWord": "intro",
+          "afterWord": "Then"
+        }
+      ],
+      "phraseMatches": []
+    }
+  }
+}

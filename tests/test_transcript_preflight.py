@@ -1,9 +1,9 @@
-from app.intent_compiler.transcript_preflight import (
+from app.agent.intent.editing.transcript_preflight import (
     needs_phrase_matching,
     needs_transcript_hydration,
     resolve_transcript_target_clip_ids,
 )
-from app.intent_compiler.models import IntentCompilerContext
+from app.agent.intent.editing.models import IntentCompilerContext
 
 
 def test_needs_transcript_hydration_detects_pause_and_phrase_signals():
