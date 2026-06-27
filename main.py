@@ -6,9 +6,7 @@ from typing import Any
 
 from fastapi import (
     Depends,
-    HTTPException,
     Query,
-    Request,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -16,25 +14,16 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.app import create_app
-from app.api.context import context_id as _context_id
 from app.api.intent_logging import (
     intent_context_log_summary as _intent_context_log_summary,
     intent_result_log_summary as _intent_result_log_summary,
 )
 from app.api.schemas.intent import VoiceIntentStartPayload
-from app.api.schemas.projects import (
-    AgentSessionCreatePayload,
-    AgentSessionForProjectCreatePayload,
-    ProjectCreatePayload,
-)
 from app.api.schemas.sessions import WebSocketRepromptPayload, WebSocketSessionStartPayload
 from app.api.session_messages import is_timeline_approval_message as _is_timeline_approval_message
 from app.api.timing import elapsed_ms as _elapsed_ms
 from app.auth import (
-    ClerkPrincipal,
-    require_clerk_user,
     require_clerk_websocket_user,
-    require_owned_project,
     require_owned_session,
 )
 from app.database import get_db
@@ -53,13 +42,9 @@ from app.services.realtime_transcription import (
     DEFAULT_TRANSCRIBE_MODEL,
     stream_transcription,
 )
-from app.intent_compiler.llm import IntentCompilerService
-from app.intent_compiler.models import IntentCompileRequest, IntentCompilerContext
-from app.intent_compiler.runs import create_intent_run, delete_intent_run, get_intent_run
-from app.intent_compiler.transcripts import prepare_intent_transcript_context
-from app.intent_compiler.voice import stream_voice_intent
-from app.ui_workspace.models import UIWorkspacePlanRequest, UIWorkspacePlanResponse
-from app.ui_workspace.planner import UIWorkspacePlannerService
+from app.agent.intent.editing.service import IntentCompilerService
+from app.intent_compiler.runs import delete_intent_run, get_intent_run
+from app.agent.intent.editing.voice import stream_voice_intent
 from app.services.transcript_store import (
     get_persisted_session_data,
 )
@@ -73,107 +58,6 @@ logger = logging.getLogger(__name__)
 
 
 app = create_app()
-
-
-@app.post("/intent-runs")
-async def create_intent_run_endpoint(
-    payload: IntentCompileRequest,
-    request: Request,
-    principal: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    started_at = perf_counter()
-    logger.info(
-        "[intent-runs] Create requested prompt_chars=%s context=%s",
-        len(payload.prompt),
-        _intent_context_log_summary(payload.context),
-    )
-    project_id = _context_id(payload.context.projectId)
-    if project_id is not None:
-        ownership_started_at = perf_counter()
-        logger.info("[intent-runs] Project ownership check starting project_id=%s", project_id)
-        await require_owned_project(db, project_id=project_id, principal=principal)
-        logger.info(
-            "[intent-runs] Project ownership check completed project_id=%s elapsed_ms=%s",
-            project_id,
-            _elapsed_ms(ownership_started_at),
-        )
-    session_id = _context_id(payload.context.sessionId)
-    if session_id is not None:
-        ownership_started_at = perf_counter()
-        logger.info("[intent-runs] Session ownership check starting session_id=%s", session_id)
-        await require_owned_session(db, session_id=session_id, principal=principal)
-        logger.info(
-            "[intent-runs] Session ownership check completed session_id=%s elapsed_ms=%s",
-            session_id,
-            _elapsed_ms(ownership_started_at),
-        )
-    hydration_started_at = perf_counter()
-    logger.info("[intent-runs] Context hydration starting prompt_chars=%s", len(payload.prompt))
-    context, hydration_meta = await prepare_intent_transcript_context(
-        prompt=payload.prompt,
-        context=payload.context,
-        db=db,
-    )
-    logger.info(
-        "[intent-runs] Context hydrated prompt_chars=%s context=%s elapsed_ms=%s",
-        len(payload.prompt),
-        _intent_context_log_summary(context, hydration=hydration_meta),
-        _elapsed_ms(hydration_started_at),
-    )
-    run = await create_intent_run(
-        owner_user_id=principal.user_id,
-        prompt=payload.prompt,
-        context=context,
-    )
-    websocket_url = str(request.url_for("intent_run_websocket", run_id=run.run_id)).replace(
-        "http://",
-        "ws://",
-        1,
-    ).replace("https://", "wss://", 1)
-    logger.info(
-        "[intent-runs] Created run=%s websocket_url=%s elapsed_ms=%s",
-        run.run_id,
-        websocket_url,
-        _elapsed_ms(started_at),
-    )
-    return {"run_id": run.run_id, "websocket_url": websocket_url}
-
-
-@app.post("/projects/{project_id}/ui-workspace-plan")
-async def create_ui_workspace_plan(
-    project_id: int,
-    payload: UIWorkspacePlanRequest,
-    principal: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    started_at = perf_counter()
-    await require_owned_project(db, project_id=project_id, principal=principal)
-    context_project_id = _context_id(payload.context.projectId)
-    if context_project_id is not None and context_project_id != project_id:
-        raise HTTPException(
-            status_code=400,
-            detail="context.projectId must match the route project_id when provided.",
-        )
-    session_id = _context_id(payload.context.sessionId)
-    if session_id is not None:
-        await require_owned_session(db, session_id=session_id, principal=principal)
-
-    logger.info(
-        "[ui-workspace] Plan requested project_id=%s prompt_chars=%s",
-        project_id,
-        len(payload.prompt),
-    )
-    service = UIWorkspacePlannerService(use_llm=False)
-    plan = await service.plan(payload)
-    logger.info(
-        "[ui-workspace] Plan completed project_id=%s workspace_id=%s slices=%s elapsed_ms=%s",
-        project_id,
-        plan.workspaceId,
-        len(plan.intentSlices),
-        _elapsed_ms(started_at),
-    )
-    return UIWorkspacePlanResponse(plan=plan)
 
 
 @app.websocket("/ws/sessions/{session_id}")

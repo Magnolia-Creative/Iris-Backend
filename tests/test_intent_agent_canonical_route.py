@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 
 import main
+from app.api.routes import intent as intent_routes
 from app.agent.intent.editing.models import CompileSource, IntentCompileResult, IntentCompilerContext
 from app.agent.intent.models import IntentAgentResponse
 from app.agent.intent.ui.models import IntentUIPlanRequest
@@ -65,10 +66,14 @@ def test_agent_intent_route_covers_visual_workspace_planning(monkeypatch):
         )
         return IntentAgentResponse(edit=_edit_result(), ui=ui_plan)
 
-    monkeypatch.setattr(main, "require_owned_project", owned_project)
-    monkeypatch.setattr(main, "require_owned_session", owned_session)
-    monkeypatch.setattr(main, "prepare_intent_transcript_context", fake_prepare_intent_transcript_context)
-    monkeypatch.setattr(main, "run_intent_agent", fake_run_intent_agent)
+    monkeypatch.setattr(intent_routes, "require_owned_project", owned_project)
+    monkeypatch.setattr(intent_routes, "require_owned_session", owned_session)
+    monkeypatch.setattr(
+        intent_routes,
+        "prepare_intent_transcript_context",
+        fake_prepare_intent_transcript_context,
+    )
+    monkeypatch.setattr(intent_routes, "run_intent_agent", fake_run_intent_agent)
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
     try:
