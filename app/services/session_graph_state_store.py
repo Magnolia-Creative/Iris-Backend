@@ -4,15 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import models
-from app.automake.state import SessionGraphState
-
-
-def _normalize_session_graph_state(
-    *, session_id: int, graph_state: dict[str, Any]
-) -> SessionGraphState:
-    normalized: SessionGraphState = dict(graph_state)
-    normalized["session_id"] = str(session_id)
-    return normalized
+from app.automake.state import SessionGraphState, normalize_session_graph_state
 
 
 async def get_persisted_session_graph_state(
@@ -24,7 +16,7 @@ async def get_persisted_session_graph_state(
     graph_state = result.scalar_one_or_none()
     if not isinstance(graph_state, dict):
         return None
-    return _normalize_session_graph_state(session_id=session_id, graph_state=graph_state)
+    return normalize_session_graph_state(graph_state, session_id=session_id)
 
 
 async def persist_session_graph_state(
@@ -37,5 +29,5 @@ async def persist_session_graph_state(
     if session is None:
         raise KeyError(f"Unknown session_id: {session_id}")
 
-    session.graph_state = dict(state)
+    session.graph_state = dict(normalize_session_graph_state(state, session_id=session_id))
     await db.commit()

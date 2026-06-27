@@ -5,6 +5,7 @@ from typing_extensions import NotRequired, TypedDict
 
 
 NextAction = Literal["hydrate_transcripts", "clip_cleanup", "timeline_planner", "finish"]
+SESSION_GRAPH_STATE_VERSION = 1
 
 
 class RetrievalPlan(TypedDict, total=False):
@@ -46,6 +47,7 @@ class ClipState(TypedDict, total=False):
 
 
 class SessionGraphState(TypedDict, total=False):
+    graph_state_version: int
     session_id: str
     project_id: int
     user_prompt: str
@@ -63,6 +65,24 @@ class SessionGraphState(TypedDict, total=False):
     errors: list[str]
     status_message: NotRequired[str]
     status_details: NotRequired[dict[str, Any]]
+
+
+def normalize_session_graph_state(
+    graph_state: dict[str, Any],
+    *,
+    session_id: int | str,
+) -> SessionGraphState:
+    normalized: SessionGraphState = dict(graph_state)
+    normalized["graph_state_version"] = int(
+        normalized.get("graph_state_version") or SESSION_GRAPH_STATE_VERSION
+    )
+    normalized["session_id"] = str(session_id)
+    normalized.setdefault("waiting_for_user", False)
+    normalized.setdefault("iteration_count", 0)
+    normalized.setdefault("notes", [])
+    normalized.setdefault("errors", [])
+    normalized.setdefault("clips", [])
+    return normalized
 
 
 class RetrievalPlanModel(BaseModel):
