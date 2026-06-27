@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.projects import (
@@ -13,7 +13,6 @@ from app.services.session_ingest import (
     create_agent_session_for_project,
     create_project,
 )
-from app.services.transcript_store import get_persisted_project_data
 
 
 router = APIRouter()
@@ -43,19 +42,6 @@ async def create_agent_session_for_existing_project(
         project_id=project_id,
         session_name=payload.session_name,
     )
-
-
-@router.get("/projects/{project_id}/clips/status")
-async def get_project_clips_status(
-    project_id: int,
-    principal: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    await require_owned_project(db, project_id=project_id, principal=principal)
-    payload = await get_persisted_project_data(db, project_id, include_ingest_details=False)
-    if payload is None:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
-    return payload
 
 
 @router.post("/projects/agent-sessions")

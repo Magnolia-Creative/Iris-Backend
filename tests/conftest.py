@@ -10,6 +10,7 @@ from app.api.routes import intent as intent_routes
 from app.api.routes import projects as project_routes
 from app.api.routes import search as search_routes
 from app.api.routes import sessions as session_routes
+from app.api.routes import sources as sources_routes
 from app.auth import ClerkPrincipal, require_clerk_user
 
 
@@ -41,12 +42,24 @@ def route_auth_overrides(monkeypatch, fake_principal):
         fake_require_owned_project_clip,
         raising=False,
     )
-    for route_module in (captions_routes, clip_routes, intent_routes, project_routes, search_routes):
+    for route_module in (
+        captions_routes,
+        clip_routes,
+        intent_routes,
+        project_routes,
+        search_routes,
+        sources_routes,
+    ):
         monkeypatch.setattr(route_module, "require_owned_project", fake_require_owned_project)
-    for route_module in (clip_routes, intent_routes, session_routes):
+    for route_module in (clip_routes, intent_routes, session_routes, sources_routes):
         monkeypatch.setattr(route_module, "require_owned_session", fake_require_owned_session)
     monkeypatch.setattr(
         clip_routes,
+        "require_owned_project_clip",
+        fake_require_owned_project_clip,
+    )
+    monkeypatch.setattr(
+        sources_routes,
         "require_owned_project_clip",
         fake_require_owned_project_clip,
     )

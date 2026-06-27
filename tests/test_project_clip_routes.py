@@ -1,9 +1,9 @@
 from collections.abc import AsyncIterator
 
-from app.api.routes import clips as clip_routes
 from app.api.routes import projects as project_routes
 from app.api.routes import search as search_routes
 from app.api.routes import sessions as session_routes
+from app.api.routes import sources as sources_routes
 from app.api.routes import transcriptions as transcription_routes
 
 
@@ -111,7 +111,7 @@ def test_create_project_route(monkeypatch, app_client, set_db_override):
     assert response.json() == {"project_id": 42, "project_name": "My Doc"}
 
 
-def test_get_project_clips_status_route(monkeypatch, app_client, set_db_override):
+def test_get_project_sources_route(monkeypatch, app_client, set_db_override):
     async def fake_get_persisted_project_data(db, project_id, *, include_ingest_details=False):
         assert project_id == 11
         assert include_ingest_details is False
@@ -128,9 +128,9 @@ def test_get_project_clips_status_route(monkeypatch, app_client, set_db_override
             "videos": [],
         }
 
-    monkeypatch.setattr(project_routes, "get_persisted_project_data", fake_get_persisted_project_data)
+    monkeypatch.setattr(sources_routes, "get_persisted_project_data", fake_get_persisted_project_data)
     set_db_override(_fake_db)
-    response = app_client.get("/projects/11/clips/status")
+    response = app_client.get("/projects/11/sources")
     assert response.status_code == 200
     assert response.json()["project_id"] == 11
 
@@ -174,7 +174,7 @@ def test_create_agent_session_for_project_route(monkeypatch, app_client, set_db_
     assert response.json()["project_id"] == 11
 
 
-def test_process_project_clip_batch_route(monkeypatch, app_client, set_db_override):
+def test_process_project_source_batch_route(monkeypatch, app_client, set_db_override):
     async def fake_process_project_clips(
         db,
         *,
@@ -217,10 +217,10 @@ def test_process_project_clip_batch_route(monkeypatch, app_client, set_db_overri
             "vector_index": {"status": "scheduled", "scheduled_clip_count": 1},
         }
 
-    monkeypatch.setattr(clip_routes, "process_project_clips", fake_process_project_clips)
+    monkeypatch.setattr(sources_routes, "process_project_clips", fake_process_project_clips)
     set_db_override(_fake_db)
     response = app_client.post(
-        "/projects/11/clips/process",
+        "/projects/11/sources",
         data={"local_key": "abc-123"},
         files={"videos": ("clip.m4a", b"audio", "audio/mp4")},
     )
@@ -274,7 +274,7 @@ def test_get_session_status_route(monkeypatch, app_client, set_db_override):
     assert response.json()["ready_for_websocket"] is True
 
 
-def test_cancel_project_clip_route(monkeypatch, app_client, set_db_override):
+def test_cancel_project_source_route(monkeypatch, app_client, set_db_override):
     async def fake_cancel_clip_processing(db, *, project_id, session_id, local_key):
         assert project_id == 11
         assert session_id is None
@@ -289,9 +289,9 @@ def test_cancel_project_clip_route(monkeypatch, app_client, set_db_override):
             "ready_for_websocket": False,
         }
 
-    monkeypatch.setattr(clip_routes, "cancel_clip_processing", fake_cancel_clip_processing)
+    monkeypatch.setattr(sources_routes, "cancel_clip_processing", fake_cancel_clip_processing)
     set_db_override(_fake_db)
-    response = app_client.delete("/projects/11/clips/abc-123")
+    response = app_client.delete("/projects/11/sources/abc-123")
     assert response.status_code == 200
     assert response.json()["task_cancelled"] is True
     assert response.json()["deleted_clip_id"] == 99

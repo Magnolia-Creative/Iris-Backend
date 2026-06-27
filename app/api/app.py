@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import (
     captions,
-    clips,
     health,
     intent,
     projects,
@@ -17,6 +16,7 @@ from app.api.routes import (
     search,
     session_ws,
     sessions,
+    sources,
     transcriptions,
 )
 
@@ -58,7 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(transcriptions.router)
     app.include_router(projects.router)
     app.include_router(sessions.router)
-    app.include_router(clips.router)
+    app.include_router(sources.router)
     app.include_router(captions.router)
     app.include_router(search.router)
     app.include_router(intent.router)
