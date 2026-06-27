@@ -4,6 +4,8 @@ from collections.abc import AsyncIterator
 from fastapi.testclient import TestClient
 
 import main
+from app.api.routes import search as search_routes
+from app.api.routes import transcriptions as transcription_routes
 from app.database import get_db
 
 
@@ -47,8 +49,16 @@ def test_create_sentence_transcription_route(monkeypatch):
     def fake_print(*args, **kwargs):
         printed_lines.append(" ".join(str(arg) for arg in args))
 
-    monkeypatch.setattr(main, "transcribe_upload_to_sentences", fake_transcribe_upload_to_sentences)
-    monkeypatch.setattr(main, "insert_sentence_upload_transcript", fake_insert_sentence_upload)
+    monkeypatch.setattr(
+        transcription_routes,
+        "transcribe_upload_to_sentences",
+        fake_transcribe_upload_to_sentences,
+    )
+    monkeypatch.setattr(
+        transcription_routes,
+        "insert_sentence_upload_transcript",
+        fake_insert_sentence_upload,
+    )
     monkeypatch.setattr("builtins.print", fake_print)
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -384,7 +394,7 @@ def test_semantic_search_project_not_found(monkeypatch):
 
         raise HTTPException(status_code=404, detail="Project 40404 not found.")
 
-    monkeypatch.setattr(main, "require_owned_project", fake_require_owned_project)
+    monkeypatch.setattr(search_routes, "require_owned_project", fake_require_owned_project)
     main.app.dependency_overrides[get_db] = _fake_db_semantic_404
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -426,7 +436,7 @@ def test_semantic_search_project_route(monkeypatch):
             "query": query,
         }
 
-    monkeypatch.setattr(main, "search_project_semantic", fake_search)
+    monkeypatch.setattr(search_routes, "search_project_semantic", fake_search)
     main.app.dependency_overrides[get_db] = _fake_db_semantic_200
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -451,7 +461,7 @@ def test_transcript_search_project_not_found(monkeypatch):
 
         raise HTTPException(status_code=404, detail="Project 40404 not found.")
 
-    monkeypatch.setattr(main, "require_owned_project", fake_require_owned_project)
+    monkeypatch.setattr(search_routes, "require_owned_project", fake_require_owned_project)
     main.app.dependency_overrides[get_db] = _fake_db_semantic_404
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -485,7 +495,7 @@ def test_transcript_search_project_route(monkeypatch):
             "query": query,
         }
 
-    monkeypatch.setattr(main, "search_project_transcript", fake_search)
+    monkeypatch.setattr(search_routes, "search_project_transcript", fake_search)
     main.app.dependency_overrides[get_db] = _fake_db_semantic_200
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan

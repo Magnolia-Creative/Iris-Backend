@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.database import Base, engine
 from app.database import models  # noqa: F401
+from app.api.routes import health, search, transcriptions
 
 
 logger = logging.getLogger(__name__)
@@ -46,4 +47,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(health.router)
+    app.include_router(transcriptions.router)
+    app.include_router(search.router)
     return app

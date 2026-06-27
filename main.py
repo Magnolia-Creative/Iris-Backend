@@ -17,7 +17,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from pydantic import ValidationError
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.app import create_app
@@ -32,7 +31,6 @@ from app.api.schemas.projects import (
     AgentSessionForProjectCreatePayload,
     ProjectCreatePayload,
 )
-from app.api.schemas.search import SearchRequest as SemanticSearchRequest
 from app.api.schemas.sessions import WebSocketRepromptPayload, WebSocketSessionStartPayload
 from app.api.session_messages import is_timeline_approval_message as _is_timeline_approval_message
 from app.api.timing import elapsed_ms as _elapsed_ms
@@ -66,8 +64,6 @@ from app.services.session_ingest import (
     ingest_session_clips,
     process_project_clips,
 )
-from app.services.semantic_search_service import search_project_semantic
-from app.services.transcript_search_service import search_project_transcript
 from app.services.session_state_builder import build_initial_state_from_session_payload
 from app.services.realtime_transcription import (
     ALLOWED_TRANSCRIBE_MODELS,
@@ -81,12 +77,10 @@ from app.intent_compiler.transcripts import prepare_intent_transcript_context
 from app.intent_compiler.voice import stream_voice_intent
 from app.ui_workspace.models import UIWorkspacePlanRequest, UIWorkspacePlanResponse
 from app.ui_workspace.planner import UIWorkspacePlannerService
-from app.services.transcription import print_received_transcript, transcribe_upload_to_sentences
 from app.services.transcript_store import (
     get_clip_captions_payload,
     get_persisted_project_data,
     get_persisted_session_data,
-    insert_sentence_upload_transcript,
 )
 from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
@@ -99,51 +93,6 @@ logger = logging.getLogger(__name__)
 
 
 app = create_app()
-
-
-@app.get("/")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/db-health")
-async def db_health(
-    _: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(text("SELECT 1"))
-    return {"database": "ok", "result": result.scalar_one()}
-
-
-@app.post("/transcriptions/sentences")
-async def create_sentence_transcription(
-    audio: UploadFile = File(...),
-    _: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Audio upload was empty.")
-
-    suffix = ""
-    if audio.filename and "." in audio.filename:
-        suffix = f".{audio.filename.rsplit('.', 1)[-1]}"
-
-    result = await transcribe_upload_to_sentences(audio_bytes, suffix=suffix or ".m4a")
-    provider_transcript_id = result.get("transcript_id")
-    db_transcript_id = await insert_sentence_upload_transcript(db, result)
-    result["transcript_id"] = db_transcript_id
-    meta = result.get("meta")
-    meta_out = dict(meta) if isinstance(meta, dict) else {}
-    meta_out["provider_transcript_id"] = provider_transcript_id
-    result["meta"] = meta_out
-    print_received_transcript(
-        source="main_endpoint",
-        transcript_id=db_transcript_id,
-        full_text=result.get("full_text"),
-        segments=result.get("sentences"),
-    )
-    return result
 
 
 @app.post("/sessions/upload")
@@ -417,52 +366,6 @@ async def process_project_clip_batch(
         videos=videos,
         local_keys=local_keys,
         visual_frames_by_local_key=visual_map if visual_map else None,
-    )
-
-
-@app.post("/projects/{project_id}/semantic-search")
-async def semantic_search_project(
-    project_id: int,
-    payload: SemanticSearchRequest,
-    principal: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    preview = (payload.query or "").strip().replace("\n", " ")[:120]
-    logger.info(
-        "[semantic_search] http project_id=%s limit=%s query_preview=%r",
-        project_id,
-        payload.limit,
-        preview,
-    )
-    await require_owned_project(db, project_id=project_id, principal=principal)
-    return await search_project_semantic(
-        db,
-        project_id=project_id,
-        query=payload.query,
-        limit=payload.limit,
-    )
-
-
-@app.post("/projects/{project_id}/transcript-search")
-async def transcript_search_project(
-    project_id: int,
-    payload: SemanticSearchRequest,
-    principal: ClerkPrincipal = Depends(require_clerk_user),
-    db: AsyncSession = Depends(get_db),
-):
-    preview = (payload.query or "").strip().replace("\n", " ")[:120]
-    logger.info(
-        "[transcript_search] http project_id=%s limit=%s query_preview=%r",
-        project_id,
-        payload.limit,
-        preview,
-    )
-    await require_owned_project(db, project_id=project_id, principal=principal)
-    return await search_project_transcript(
-        db,
-        project_id=project_id,
-        query=payload.query,
-        limit=payload.limit,
     )
 
 
