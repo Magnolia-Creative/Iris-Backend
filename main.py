@@ -1,5 +1,4 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from datetime import datetime
 from decimal import Decimal
 import json
@@ -11,7 +10,6 @@ from typing import Literal
 from fastapi import (
     Body,
     Depends,
-    FastAPI,
     File,
     Form,
     HTTPException,
@@ -21,13 +19,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.app import create_app
 from app.auth import (
     ClerkPrincipal,
     require_clerk_user,
@@ -36,7 +32,7 @@ from app.auth import (
     require_owned_project_clip,
     require_owned_session,
 )
-from app.database import Base, engine, get_db
+from app.database import get_db
 from app.automake.runtime import (
     approve_session_timeline,
     get_session_state,
@@ -80,7 +76,6 @@ from app.services.transcript_store import (
     get_persisted_session_data,
     insert_sentence_upload_transcript,
 )
-from app.database import models  # noqa: F401
 from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
 
@@ -202,39 +197,7 @@ def _context_id(value: int | str | None) -> int | None:
         return None
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # Keep simple table creation for local development; use Alembic for production migrations.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
-
-
-@app.exception_handler(RequestValidationError)
-async def request_validation_exception_handler(
-    request: Request,
-    exc: RequestValidationError,
-) -> JSONResponse:
-    errors = exc.errors()
-    logger.warning(
-        "[validation] request=%s errors=%s",
-        request.url.path,
-        errors,
-    )
-    return JSONResponse(status_code=422, content={"detail": errors})
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[],
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = create_app()
 
 
 @app.get("/")
