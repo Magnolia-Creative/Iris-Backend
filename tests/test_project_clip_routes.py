@@ -1,27 +1,17 @@
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi.testclient import TestClient
-
-import main
 from app.api.routes import clips as clip_routes
 from app.api.routes import projects as project_routes
 from app.api.routes import search as search_routes
 from app.api.routes import sessions as session_routes
 from app.api.routes import transcriptions as transcription_routes
-from app.database import get_db
 
 
 async def _fake_db() -> AsyncIterator[object]:
     yield object()
 
 
-@asynccontextmanager
-async def _noop_lifespan(_app):
-    yield
-
-
-def test_create_sentence_transcription_route(monkeypatch):
+def test_create_sentence_transcription_route(monkeypatch, app_client, set_db_override):
     printed_lines: list[str] = []
 
     async def fake_transcribe_upload_to_sentences(audio_bytes, suffix=".m4a"):
@@ -63,19 +53,11 @@ def test_create_sentence_transcription_route(monkeypatch):
         fake_insert_sentence_upload,
     )
     monkeypatch.setattr("builtins.print", fake_print)
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    main.app.dependency_overrides[get_db] = _fake_db
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/transcriptions/sentences",
-                files={"audio": ("clip.m4a", b"audio", "audio/mp4")},
-            )
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-        main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.post(
+        "/transcriptions/sentences",
+        files={"audio": ("clip.m4a", b"audio", "audio/mp4")},
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -90,7 +72,7 @@ def test_create_sentence_transcription_route(monkeypatch):
     )
 
 
-def test_create_project_agent_session_route(monkeypatch):
+def test_create_project_agent_session_route(monkeypatch, app_client, set_db_override):
     async def fake_create_agent_session(db, *, owner_user_id, session_name=None, project_name=None):
         assert owner_user_id == "user_test"
         assert session_name is None
@@ -109,45 +91,27 @@ def test_create_project_agent_session_route(monkeypatch):
         }
 
     monkeypatch.setattr(project_routes, "create_agent_session", fake_create_agent_session)
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.post("/projects/agent-sessions", json={"project_name": "Launch Day"})
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.post("/projects/agent-sessions", json={"project_name": "Launch Day"})
     assert response.status_code == 200
     assert response.json()["project_id"] == 11
     assert response.json()["session_name"] == "Launch Day"
 
 
-def test_create_project_route(monkeypatch):
+def test_create_project_route(monkeypatch, app_client, set_db_override):
     async def fake_create_project(db, *, owner_user_id, name=None):
         assert owner_user_id == "user_test"
         assert name == "My Doc"
         return {"project_id": 42, "project_name": "My Doc"}
 
     monkeypatch.setattr(project_routes, "create_project", fake_create_project)
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.post("/projects", json={"name": "My Doc"})
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.post("/projects", json={"name": "My Doc"})
     assert response.status_code == 200
     assert response.json() == {"project_id": 42, "project_name": "My Doc"}
 
 
-def test_get_project_clips_status_route(monkeypatch):
+def test_get_project_clips_status_route(monkeypatch, app_client, set_db_override):
     async def fake_get_persisted_project_data(db, project_id, *, include_ingest_details=False):
         assert project_id == 11
         assert include_ingest_details is False
@@ -165,22 +129,13 @@ def test_get_project_clips_status_route(monkeypatch):
         }
 
     monkeypatch.setattr(project_routes, "get_persisted_project_data", fake_get_persisted_project_data)
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.get("/projects/11/clips/status")
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.get("/projects/11/clips/status")
     assert response.status_code == 200
     assert response.json()["project_id"] == 11
 
 
-def test_create_agent_session_for_project_route(monkeypatch):
+def test_create_agent_session_for_project_route(monkeypatch, app_client, set_db_override):
     async def fake_create_agent_session_for_project(
         db,
         *,
@@ -209,26 +164,17 @@ def test_create_agent_session_for_project_route(monkeypatch):
         "create_agent_session_for_project",
         fake_create_agent_session_for_project,
     )
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/projects/11/agent-sessions",
-                json={"session_name": "Edit run"},
-            )
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.post(
+        "/projects/11/agent-sessions",
+        json={"session_name": "Edit run"},
+    )
     assert response.status_code == 200
     assert response.json()["session_id"] == 9
     assert response.json()["project_id"] == 11
 
 
-def test_process_project_clip_batch_route(monkeypatch):
+def test_process_project_clip_batch_route(monkeypatch, app_client, set_db_override):
     async def fake_process_project_clips(
         db,
         *,
@@ -272,21 +218,12 @@ def test_process_project_clip_batch_route(monkeypatch):
         }
 
     monkeypatch.setattr(clip_routes, "process_project_clips", fake_process_project_clips)
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/projects/11/clips/process",
-                data={"local_key": "abc-123"},
-                files={"videos": ("clip.m4a", b"audio", "audio/mp4")},
-            )
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.post(
+        "/projects/11/clips/process",
+        data={"local_key": "abc-123"},
+        files={"videos": ("clip.m4a", b"audio", "audio/mp4")},
+    )
     assert response.status_code == 200
     assert response.json()["ready_for_websocket"] is False
     assert response.json()["pending_clip_count"] == 1
@@ -298,7 +235,7 @@ def test_process_project_clip_batch_route(monkeypatch):
     assert "clip_meta" not in response.json()["videos"][0]
 
 
-def test_get_session_status_route(monkeypatch):
+def test_get_session_status_route(monkeypatch, app_client, set_db_override):
     async def fake_get_persisted_session_data(db, session_id, *, include_ingest_details=False):
         assert session_id == 7
         assert include_ingest_details is False
@@ -330,23 +267,14 @@ def test_get_session_status_route(monkeypatch):
         }
 
     monkeypatch.setattr(session_routes, "get_persisted_session_data", fake_get_persisted_session_data)
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.get("/sessions/7")
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.get("/sessions/7")
     assert response.status_code == 200
     assert response.json()["session_status"] == "ready"
     assert response.json()["ready_for_websocket"] is True
 
 
-def test_cancel_project_clip_route(monkeypatch):
+def test_cancel_project_clip_route(monkeypatch, app_client, set_db_override):
     async def fake_cancel_clip_processing(db, *, project_id, session_id, local_key):
         assert project_id == 11
         assert session_id is None
@@ -362,17 +290,8 @@ def test_cancel_project_clip_route(monkeypatch):
         }
 
     monkeypatch.setattr(clip_routes, "cancel_clip_processing", fake_cancel_clip_processing)
-    main.app.dependency_overrides[get_db] = _fake_db
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-
-    try:
-        with TestClient(main.app) as client:
-            response = client.delete("/projects/11/clips/abc-123")
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-    main.app.dependency_overrides.clear()
+    set_db_override(_fake_db)
+    response = app_client.delete("/projects/11/clips/abc-123")
     assert response.status_code == 200
     assert response.json()["task_cancelled"] is True
     assert response.json()["deleted_clip_id"] == 99
@@ -395,22 +314,15 @@ async def _fake_db_semantic_404() -> AsyncIterator[object]:
     yield _FakeSessionSemantic404()
 
 
-def test_semantic_search_project_not_found(monkeypatch):
+def test_semantic_search_project_not_found(monkeypatch, app_client, set_db_override):
     async def fake_require_owned_project(*args, **kwargs):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="Project 40404 not found.")
 
     monkeypatch.setattr(search_routes, "require_owned_project", fake_require_owned_project)
-    main.app.dependency_overrides[get_db] = _fake_db_semantic_404
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    try:
-        with TestClient(main.app) as client:
-            response = client.post("/projects/40404/semantic-search", json={"query": "crash"})
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-        main.app.dependency_overrides.clear()
+    set_db_override(_fake_db_semantic_404)
+    response = app_client.post("/projects/40404/semantic-search", json={"query": "crash"})
     assert response.status_code == 404
 
 
@@ -423,7 +335,7 @@ async def _fake_db_semantic_200() -> AsyncIterator[object]:
     yield _FakeSessionSemantic200()
 
 
-def test_semantic_search_project_route(monkeypatch):
+def test_semantic_search_project_route(monkeypatch, app_client, set_db_override):
     async def fake_search(db, *, project_id, query, limit=None):
         assert project_id == 11
         assert query == "car"
@@ -444,44 +356,30 @@ def test_semantic_search_project_route(monkeypatch):
         }
 
     monkeypatch.setattr(search_routes, "search_project_semantic", fake_search)
-    main.app.dependency_overrides[get_db] = _fake_db_semantic_200
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/projects/11/semantic-search",
-                json={"query": "car", "limit": 3},
-            )
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-        main.app.dependency_overrides.clear()
+    set_db_override(_fake_db_semantic_200)
+    response = app_client.post(
+        "/projects/11/semantic-search",
+        json={"query": "car", "limit": 3},
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["matches"][0]["file_name"] == "x.m4a"
     assert body["matches"][0]["local_key"] == "abc"
 
 
-def test_transcript_search_project_not_found(monkeypatch):
+def test_transcript_search_project_not_found(monkeypatch, app_client, set_db_override):
     async def fake_require_owned_project(*args, **kwargs):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="Project 40404 not found.")
 
     monkeypatch.setattr(search_routes, "require_owned_project", fake_require_owned_project)
-    main.app.dependency_overrides[get_db] = _fake_db_semantic_404
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    try:
-        with TestClient(main.app) as client:
-            response = client.post("/projects/40404/transcript-search", json={"query": "hello"})
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-        main.app.dependency_overrides.clear()
+    set_db_override(_fake_db_semantic_404)
+    response = app_client.post("/projects/40404/transcript-search", json={"query": "hello"})
     assert response.status_code == 404
 
 
-def test_transcript_search_project_route(monkeypatch):
+def test_transcript_search_project_route(monkeypatch, app_client, set_db_override):
     async def fake_search(db, *, project_id, query, limit=None):
         assert project_id == 11
         assert query == "car"
@@ -503,18 +401,11 @@ def test_transcript_search_project_route(monkeypatch):
         }
 
     monkeypatch.setattr(search_routes, "search_project_transcript", fake_search)
-    main.app.dependency_overrides[get_db] = _fake_db_semantic_200
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/projects/11/transcript-search",
-                json={"query": "car", "limit": 3},
-            )
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-        main.app.dependency_overrides.clear()
+    set_db_override(_fake_db_semantic_200)
+    response = app_client.post(
+        "/projects/11/transcript-search",
+        json={"query": "car", "limit": 3},
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["matches"][0]["match_text"] == "the car stopped"

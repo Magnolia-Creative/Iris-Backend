@@ -1,19 +1,10 @@
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
-
-import main
 from app.api.routes import intent as intent_routes
 from app.agent.intent.editing.models import CompileSource, IntentCompileResult, IntentCompilerContext
 from app.agent.intent.models import IntentAgentResponse
 from app.agent.intent.ui.models import IntentUIPlanRequest
 from app.agent.intent.ui.planner import DeterministicIntentUIPlanner
-
-
-@asynccontextmanager
-async def _noop_lifespan(_app):
-    yield
 
 
 def _sample_context(**overrides) -> IntentCompilerContext:
@@ -51,7 +42,7 @@ def _edit_result() -> IntentCompileResult:
     )
 
 
-def test_agent_intent_route_covers_visual_workspace_planning(monkeypatch):
+def test_agent_intent_route_covers_visual_workspace_planning(monkeypatch, app_client):
     context = _sample_context()
     owned_project = AsyncMock(return_value=None)
     owned_session = AsyncMock(return_value=None)
@@ -74,19 +65,13 @@ def test_agent_intent_route_covers_visual_workspace_planning(monkeypatch):
         fake_prepare_intent_transcript_context,
     )
     monkeypatch.setattr(intent_routes, "run_intent_agent", fake_run_intent_agent)
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/agent/intent",
-                json={
-                    "prompt": "apply a vintage effect",
-                    "context": context.model_dump(mode="json", by_alias=True),
-                },
-            )
-    finally:
-        main.app.router.lifespan_context = original_lifespan
+    response = app_client.post(
+        "/agent/intent",
+        json={
+            "prompt": "apply a vintage effect",
+            "context": context.model_dump(mode="json", by_alias=True),
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
