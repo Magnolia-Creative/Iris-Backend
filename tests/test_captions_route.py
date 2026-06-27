@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from fastapi.testclient import TestClient
 
 import main
+from app.api.routes import captions as captions_routes
 from app.database import get_db
 
 
@@ -31,7 +32,7 @@ def test_get_captions_ok(monkeypatch):
             "meta": {"source_file": "a.mp4", "mime_type": "video/mp4", "extension": "mp4", "clip_meta": {}, "video_report": {}},
         }
 
-    monkeypatch.setattr(main, "get_clip_captions_payload", fake_get_clip_captions_payload)
+    monkeypatch.setattr(captions_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -53,7 +54,7 @@ def test_get_captions_404_project(monkeypatch):
     async def fake_get_clip_captions_payload(_db, *, project_id, local_key):
         return "project_not_found", None
 
-    monkeypatch.setattr(main, "get_clip_captions_payload", fake_get_clip_captions_payload)
+    monkeypatch.setattr(captions_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -72,7 +73,7 @@ def test_get_captions_409_no_transcript(monkeypatch):
     async def fake_get_clip_captions_payload(_db, *, project_id, local_key):
         return "transcript_not_ready", {"clip_id": 1, "processing_status": "processing"}
 
-    monkeypatch.setattr(main, "get_clip_captions_payload", fake_get_clip_captions_payload)
+    monkeypatch.setattr(captions_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan

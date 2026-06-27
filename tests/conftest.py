@@ -1,6 +1,11 @@
 import pytest
 
 import main
+from app.api.routes import captions as captions_routes
+from app.api.routes import clips as clip_routes
+from app.api.routes import projects as project_routes
+from app.api.routes import search as search_routes
+from app.api.routes import sessions as session_routes
 from app.auth import ClerkPrincipal
 
 
@@ -21,6 +26,20 @@ def default_clerk_route_auth(monkeypatch):
     main.app.dependency_overrides[main.require_clerk_user] = fake_require_clerk_user
     monkeypatch.setattr(main, "require_owned_project", fake_require_owned_project)
     monkeypatch.setattr(main, "require_owned_session", fake_require_owned_session)
-    monkeypatch.setattr(main, "require_owned_project_clip", fake_require_owned_project_clip)
+    monkeypatch.setattr(
+        main,
+        "require_owned_project_clip",
+        fake_require_owned_project_clip,
+        raising=False,
+    )
+    for route_module in (captions_routes, clip_routes, project_routes, search_routes):
+        monkeypatch.setattr(route_module, "require_owned_project", fake_require_owned_project)
+    for route_module in (clip_routes, session_routes):
+        monkeypatch.setattr(route_module, "require_owned_session", fake_require_owned_session)
+    monkeypatch.setattr(
+        clip_routes,
+        "require_owned_project_clip",
+        fake_require_owned_project_clip,
+    )
     yield
     main.app.dependency_overrides.pop(main.require_clerk_user, None)

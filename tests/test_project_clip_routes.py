@@ -4,7 +4,10 @@ from collections.abc import AsyncIterator
 from fastapi.testclient import TestClient
 
 import main
+from app.api.routes import clips as clip_routes
+from app.api.routes import projects as project_routes
 from app.api.routes import search as search_routes
+from app.api.routes import sessions as session_routes
 from app.api.routes import transcriptions as transcription_routes
 from app.database import get_db
 
@@ -105,7 +108,7 @@ def test_create_project_agent_session_route(monkeypatch):
             "videos": [],
         }
 
-    monkeypatch.setattr(main, "create_agent_session", fake_create_agent_session)
+    monkeypatch.setattr(project_routes, "create_agent_session", fake_create_agent_session)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -128,7 +131,7 @@ def test_create_project_route(monkeypatch):
         assert name == "My Doc"
         return {"project_id": 42, "project_name": "My Doc"}
 
-    monkeypatch.setattr(main, "create_project", fake_create_project)
+    monkeypatch.setattr(project_routes, "create_project", fake_create_project)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -161,7 +164,7 @@ def test_get_project_clips_status_route(monkeypatch):
             "videos": [],
         }
 
-    monkeypatch.setattr(main, "get_persisted_project_data", fake_get_persisted_project_data)
+    monkeypatch.setattr(project_routes, "get_persisted_project_data", fake_get_persisted_project_data)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -201,7 +204,11 @@ def test_create_agent_session_for_project_route(monkeypatch):
             "videos": [],
         }
 
-    monkeypatch.setattr(main, "create_agent_session_for_project", fake_create_agent_session_for_project)
+    monkeypatch.setattr(
+        project_routes,
+        "create_agent_session_for_project",
+        fake_create_agent_session_for_project,
+    )
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -264,7 +271,7 @@ def test_process_project_clip_batch_route(monkeypatch):
             "vector_index": {"status": "scheduled", "scheduled_clip_count": 1},
         }
 
-    monkeypatch.setattr(main, "process_project_clips", fake_process_project_clips)
+    monkeypatch.setattr(clip_routes, "process_project_clips", fake_process_project_clips)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -322,7 +329,7 @@ def test_get_session_status_route(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(main, "get_persisted_session_data", fake_get_persisted_session_data)
+    monkeypatch.setattr(session_routes, "get_persisted_session_data", fake_get_persisted_session_data)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
@@ -354,7 +361,7 @@ def test_cancel_project_clip_route(monkeypatch):
             "ready_for_websocket": False,
         }
 
-    monkeypatch.setattr(main, "cancel_clip_processing", fake_cancel_clip_processing)
+    monkeypatch.setattr(clip_routes, "cancel_clip_processing", fake_cancel_clip_processing)
     main.app.dependency_overrides[get_db] = _fake_db
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
