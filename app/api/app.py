@@ -7,8 +7,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.database import Base, engine
-from app.database import models  # noqa: F401
 from app.api.routes import (
     captions,
     clips,
@@ -28,9 +26,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # Keep simple table creation for local development; use Alembic for production migrations.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Alembic owns schema creation and migration; app startup should not mutate schema.
     yield
 
 
