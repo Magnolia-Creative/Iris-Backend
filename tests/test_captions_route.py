@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 
-from app.api.routes import captions as captions_routes
+from app.api.routes import sources as sources_routes
 
 
 async def _fake_db() -> AsyncIterator[object]:
@@ -22,9 +22,9 @@ def test_get_captions_ok(monkeypatch, app_client, set_db_override):
             "meta": {"source_file": "a.mp4", "mime_type": "video/mp4", "extension": "mp4", "clip_meta": {}, "video_report": {}},
         }
 
-    monkeypatch.setattr(captions_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
+    monkeypatch.setattr(sources_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
     set_db_override(_fake_db)
-    response = app_client.get("/captions", params={"project_id": 1, "local_key": "lk-1"})
+    response = app_client.get("/projects/1/sources/lk-1/transcript")
 
     assert response.status_code == 200
     data = response.json()
@@ -36,9 +36,9 @@ def test_get_captions_404_project(monkeypatch, app_client, set_db_override):
     async def fake_get_clip_captions_payload(_db, *, project_id, local_key):
         return "project_not_found", None
 
-    monkeypatch.setattr(captions_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
+    monkeypatch.setattr(sources_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
     set_db_override(_fake_db)
-    response = app_client.get("/captions", params={"project_id": 999, "local_key": "x"})
+    response = app_client.get("/projects/999/sources/x/transcript")
 
     assert response.status_code == 404
 
@@ -47,8 +47,8 @@ def test_get_captions_409_no_transcript(monkeypatch, app_client, set_db_override
     async def fake_get_clip_captions_payload(_db, *, project_id, local_key):
         return "transcript_not_ready", {"clip_id": 1, "processing_status": "processing"}
 
-    monkeypatch.setattr(captions_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
+    monkeypatch.setattr(sources_routes, "get_clip_captions_payload", fake_get_clip_captions_payload)
     set_db_override(_fake_db)
-    response = app_client.get("/captions", params={"project_id": 1, "local_key": "lk"})
+    response = app_client.get("/projects/1/sources/lk/transcript")
 
     assert response.status_code == 409

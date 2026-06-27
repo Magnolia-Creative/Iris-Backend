@@ -12,7 +12,7 @@ from app.auth import (
 )
 from app.database import get_db
 from app.services.session_ingest import cancel_clip_processing, process_project_clips
-from app.services.transcript_store import get_persisted_project_data
+from app.services.transcript_store import get_clip_captions_payload, get_persisted_project_data
 from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
 
@@ -67,6 +67,61 @@ async def get_project_sources(
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
     return payload
+
+
+@router.get("/projects/{project_id}/sources/{local_key}/transcript")
+async def get_project_source_transcript(
+    project_id: int,
+    local_key: str,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return transcript segments as `sentences` for a single project source."""
+    logger.info(
+        "[sources/transcript] request project_id=%s local_key=%s",
+        project_id,
+        local_key,
+    )
+    await require_owned_project(db, project_id=project_id, principal=principal)
+    status, body = await get_clip_captions_payload(db, project_id=project_id, local_key=local_key)
+    if status == "project_not_found":
+        logger.warning(
+            "[sources/transcript] project not found project_id=%s local_key=%s",
+            project_id,
+            local_key,
+        )
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    if status == "clip_not_found":
+        logger.warning(
+            "[sources/transcript] source not found project_id=%s local_key=%s",
+            project_id,
+            local_key,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"No source with local_key={local_key!r} for project {project_id}.",
+        )
+    if status == "transcript_not_ready":
+        logger.info(
+            "[sources/transcript] transcript not ready project_id=%s local_key=%s body=%s",
+            project_id,
+            local_key,
+            body,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Transcript not available yet for this source.",
+        )
+    logger.info(
+        "[sources/transcript] success project_id=%s local_key=%s clip_id=%s transcript_id=%s sentence_count=%s processing_status=%s",
+        project_id,
+        local_key,
+        body.get("clip_id") if isinstance(body, dict) else None,
+        body.get("transcript_id") if isinstance(body, dict) else None,
+        len(body.get("sentences") or []) if isinstance(body, dict) else 0,
+        body.get("processing_status") if isinstance(body, dict) else None,
+    )
+    return body
 
 
 @router.delete("/projects/{project_id}/sources/{local_key}")
