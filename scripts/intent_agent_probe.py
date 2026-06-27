@@ -2,7 +2,7 @@
 """Call the synchronous intent agent endpoint with a prompt and editor context.
 
 Example:
-    python scripts/test_intent_agent.py \
+    python scripts/intent_agent_probe.py \
       --prompt "remove the long pause from this clip" \
       --context-file scripts/sample_intent_context.json \
       --base-url http://localhost:8000
