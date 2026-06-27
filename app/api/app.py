@@ -9,7 +9,18 @@ from fastapi.responses import JSONResponse
 
 from app.database import Base, engine
 from app.database import models  # noqa: F401
-from app.api.routes import captions, clips, health, intent, projects, search, sessions, transcriptions
+from app.api.routes import (
+    captions,
+    clips,
+    health,
+    intent,
+    projects,
+    realtime_ws,
+    search,
+    session_ws,
+    sessions,
+    transcriptions,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -55,4 +66,6 @@ def create_app() -> FastAPI:
     app.include_router(captions.router)
     app.include_router(search.router)
     app.include_router(intent.router)
+    app.include_router(session_ws.router)
+    app.include_router(realtime_ws.router)
     return app

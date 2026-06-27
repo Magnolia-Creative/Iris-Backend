@@ -5,15 +5,17 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 import main
-from app.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
-from app.intent_compiler.compiler import IntentCompiler, action_execution_tier
-from app.intent_compiler.llm import (
+from app.api.routes import realtime_ws
+from app.auth import ClerkPrincipal
+from app.agent.intent.editing.capabilities import DEFAULT_EFFECT_CAPABILITIES
+from app.agent.intent.editing.compiler import IntentCompiler, action_execution_tier
+from app.agent.intent.editing.service import (
     IntentCompilerService,
     IntentLLMCompiler,
     _capability_embedding_text,
     _editor_context,
 )
-from app.intent_compiler.models import (
+from app.agent.intent.editing.models import (
     ClipTranscriptContext,
     CompileSource,
     EffectCapability,
@@ -30,15 +32,18 @@ from app.intent_compiler.models import (
     SemanticEditPlan,
     TranscriptWord,
 )
-from app.intent_compiler import runs as intent_runs
-from app.intent_compiler.transcript_phrases import collect_phrase_matches
-from app.intent_compiler.transcripts import hydrate_intent_transcript_context, prepare_intent_transcript_context
+from app.agent.intent.editing.transcript_phrases import collect_phrase_matches
+from app.agent.intent.editing.transcripts import hydrate_intent_transcript_context, prepare_intent_transcript_context
 from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
 
 
 @asynccontextmanager
 async def _noop_lifespan(_app):
     yield
+
+
+async def _fake_require_clerk_websocket_user(_websocket):
+    return ClerkPrincipal(user_id="user_test", session_id="sess_test", claims={"sub": "user_test"})
 
 
 def _sample_context() -> dict:
@@ -59,24 +64,6 @@ def _sample_context() -> dict:
         },
         "orderedClipIdsByTrackId": {"track-video": ["clip-b"]},
     }
-
-
-class _FakeRedis:
-    def __init__(self):
-        self.values = {}
-        self.expirations = {}
-        self.deleted = []
-
-    async def set(self, key, value, ex=None):
-        self.values[key] = value
-        self.expirations[key] = ex
-
-    async def get(self, key):
-        return self.values.get(key)
-
-    async def delete(self, key):
-        self.deleted.append(key)
-        self.values.pop(key, None)
 
 
 def _multi_clip_context() -> dict:
@@ -397,7 +384,7 @@ def test_prepare_intent_transcript_context_skips_hydration_without_signal():
             raise AssertionError("hydrate_intent_transcript_context should not run")
 
         with patch(
-            "app.intent_compiler.transcripts.hydrate_intent_transcript_context",
+            "app.agent.intent.editing.transcripts.hydrate_intent_transcript_context",
             side_effect=_hydrate_should_not_run,
         ):
             prepared, meta = await prepare_intent_transcript_context(
@@ -421,7 +408,7 @@ def test_prepare_intent_transcript_context_skips_when_transcript_needed_but_no_r
             raise AssertionError("hydrate_intent_transcript_context should not run")
 
         with patch(
-            "app.intent_compiler.transcripts.hydrate_intent_transcript_context",
+            "app.agent.intent.editing.transcripts.hydrate_intent_transcript_context",
             side_effect=_hydrate_should_not_run,
         ):
             prepared, meta = await prepare_intent_transcript_context(
@@ -469,7 +456,7 @@ def test_prepare_intent_transcript_context_attaches_phrase_matches_after_hydrate
             )
 
         with patch(
-            "app.intent_compiler.transcripts.hydrate_intent_transcript_context",
+            "app.agent.intent.editing.transcripts.hydrate_intent_transcript_context",
             side_effect=fake_hydrate,
         ):
             prepared, meta = await prepare_intent_transcript_context(
@@ -665,9 +652,9 @@ def test_hydrate_intent_transcript_context_reads_sql_and_caches(monkeypatch):
         calls["cache"] = (session_id, clip_id, transcript_payload["full_text"])
         return f"session:{session_id}:transcript:{clip_id}"
 
-    monkeypatch.setattr("app.intent_compiler.transcripts.get_cached_transcript", fake_get_cached_transcript)
-    monkeypatch.setattr("app.intent_compiler.transcripts.get_transcript_payload", fake_get_transcript_payload)
-    monkeypatch.setattr("app.intent_compiler.transcripts.cache_transcript", fake_cache_transcript)
+    monkeypatch.setattr("app.agent.intent.editing.transcripts.get_cached_transcript", fake_get_cached_transcript)
+    monkeypatch.setattr("app.agent.intent.editing.transcripts.get_transcript_payload", fake_get_transcript_payload)
+    monkeypatch.setattr("app.agent.intent.editing.transcripts.cache_transcript", fake_cache_transcript)
     context = IntentCompilerContext.model_validate(
         {
             **_sample_context(),
@@ -720,13 +707,13 @@ def test_hydrate_intent_transcript_context_loads_sentence_upload_uuid(monkeypatc
         calls["cache"] = (session_id, clip_id, transcript_payload["full_text"])
         return f"session:{session_id}:transcript:{clip_id}"
 
-    monkeypatch.setattr("app.intent_compiler.transcripts.get_cached_transcript", fake_get_cached_transcript)
-    monkeypatch.setattr("app.intent_compiler.transcripts.get_transcript_payload", fake_get_transcript_payload)
+    monkeypatch.setattr("app.agent.intent.editing.transcripts.get_cached_transcript", fake_get_cached_transcript)
+    monkeypatch.setattr("app.agent.intent.editing.transcripts.get_transcript_payload", fake_get_transcript_payload)
     monkeypatch.setattr(
-        "app.intent_compiler.transcripts.get_sentence_upload_transcript_payload",
+        "app.agent.intent.editing.transcripts.get_sentence_upload_transcript_payload",
         fake_get_sentence_upload,
     )
-    monkeypatch.setattr("app.intent_compiler.transcripts.cache_transcript", fake_cache_transcript)
+    monkeypatch.setattr("app.agent.intent.editing.transcripts.cache_transcript", fake_cache_transcript)
 
     context = IntentCompilerContext.model_validate(
         {
@@ -1171,48 +1158,6 @@ def test_intent_llm_compiler_uses_function_calling_for_planner_schemas():
     ]
 
 
-def test_text_intent_run_streams_final_result(monkeypatch):
-    redis = _FakeRedis()
-
-    class FakeIntentCompilerService:
-        async def compile_prompt(self, *, prompt, context, event_handler=None):
-            assert prompt == "make this clip feel vintage"
-            if event_handler:
-                await event_handler({"type": "planner_started", "status": "Parsing prompt."})
-            return IntentCompileResult(
-                actions=[],
-                confidence=0,
-                source=CompileSource.llm,
-                unresolvedText=prompt,
-                warnings=[IntentCompileWarning.unsupportedAction],
-                needsClarification=False,
-                experimentalEffectOperations=[],
-            )
-
-    monkeypatch.setattr(intent_runs, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(main, "IntentCompilerService", FakeIntentCompilerService)
-    original_lifespan = main.app.router.lifespan_context
-    main.app.router.lifespan_context = _noop_lifespan
-    try:
-        with TestClient(main.app) as client:
-            response = client.post(
-                "/intent-runs",
-                json={"prompt": "make this clip feel vintage", "context": _sample_context()},
-            )
-            assert response.status_code == 200
-            run_id = response.json()["run_id"]
-            assert redis.expirations[f"intent-run:{run_id}"] == intent_runs.INTENT_RUN_TTL_SECONDS
-            with client.websocket_connect(f"/ws/intent-runs/{run_id}") as websocket:
-                assert websocket.receive_json()["type"] == "run_started"
-                assert websocket.receive_json()["type"] == "planner_started"
-                final = websocket.receive_json()
-                assert final["type"] == "intent_result"
-                assert final["result"]["actions"] == []
-            assert f"intent-run:{run_id}" in redis.deleted
-    finally:
-        main.app.router.lifespan_context = original_lifespan
-
-
 class _FakeEmbeddingClient:
     def __init__(self, embeddings_by_text):
         self.embeddings_by_text = embeddings_by_text
@@ -1261,7 +1206,12 @@ def test_voice_intent_websocket_delegates_after_start(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(main, "stream_voice_intent", fake_stream_voice_intent)
+    monkeypatch.setattr(realtime_ws, "stream_voice_intent", fake_stream_voice_intent)
+    monkeypatch.setattr(
+        realtime_ws,
+        "require_clerk_websocket_user",
+        _fake_require_clerk_websocket_user,
+    )
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
     try:
