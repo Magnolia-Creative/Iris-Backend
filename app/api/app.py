@@ -12,7 +12,6 @@ from app.api.routes import (
     intent,
     projects,
     realtime_ws,
-    search,
     session_ws,
     sessions,
     sources,
@@ -58,7 +57,6 @@ def create_app() -> FastAPI:
     app.include_router(projects.router)
     app.include_router(sessions.router)
     app.include_router(sources.router)
-    app.include_router(search.router)
     app.include_router(intent.router)
     app.include_router(session_ws.router)
     app.include_router(realtime_ws.router)

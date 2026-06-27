@@ -1,7 +1,6 @@
 from collections.abc import AsyncIterator
 
 from app.api.routes import projects as project_routes
-from app.api.routes import search as search_routes
 from app.api.routes import sessions as session_routes
 from app.api.routes import sources as sources_routes
 from app.api.routes import transcriptions as transcription_routes
@@ -320,9 +319,12 @@ def test_semantic_search_project_not_found(monkeypatch, app_client, set_db_overr
 
         raise HTTPException(status_code=404, detail="Project 40404 not found.")
 
-    monkeypatch.setattr(search_routes, "require_owned_project", fake_require_owned_project)
+    monkeypatch.setattr(sources_routes, "require_owned_project", fake_require_owned_project)
     set_db_override(_fake_db_semantic_404)
-    response = app_client.post("/projects/40404/semantic-search", json={"query": "crash"})
+    response = app_client.post(
+        "/projects/40404/sources/search",
+        json={"query": "crash", "mode": "semantic"},
+    )
     assert response.status_code == 404
 
 
@@ -335,7 +337,7 @@ async def _fake_db_semantic_200() -> AsyncIterator[object]:
     yield _FakeSessionSemantic200()
 
 
-def test_semantic_search_project_route(monkeypatch, app_client, set_db_override):
+def test_semantic_source_search_route(monkeypatch, app_client, set_db_override):
     async def fake_search(db, *, project_id, query, limit=None):
         assert project_id == 11
         assert query == "car"
@@ -355,11 +357,11 @@ def test_semantic_search_project_route(monkeypatch, app_client, set_db_override)
             "query": query,
         }
 
-    monkeypatch.setattr(search_routes, "search_project_semantic", fake_search)
+    monkeypatch.setattr(sources_routes, "search_project_semantic", fake_search)
     set_db_override(_fake_db_semantic_200)
     response = app_client.post(
-        "/projects/11/semantic-search",
-        json={"query": "car", "limit": 3},
+        "/projects/11/sources/search",
+        json={"query": "car", "mode": "semantic", "limit": 3},
     )
     assert response.status_code == 200
     body = response.json()
@@ -373,13 +375,16 @@ def test_transcript_search_project_not_found(monkeypatch, app_client, set_db_ove
 
         raise HTTPException(status_code=404, detail="Project 40404 not found.")
 
-    monkeypatch.setattr(search_routes, "require_owned_project", fake_require_owned_project)
+    monkeypatch.setattr(sources_routes, "require_owned_project", fake_require_owned_project)
     set_db_override(_fake_db_semantic_404)
-    response = app_client.post("/projects/40404/transcript-search", json={"query": "hello"})
+    response = app_client.post(
+        "/projects/40404/sources/search",
+        json={"query": "hello", "mode": "transcript"},
+    )
     assert response.status_code == 404
 
 
-def test_transcript_search_project_route(monkeypatch, app_client, set_db_override):
+def test_transcript_source_search_route(monkeypatch, app_client, set_db_override):
     async def fake_search(db, *, project_id, query, limit=None):
         assert project_id == 11
         assert query == "car"
@@ -400,13 +405,23 @@ def test_transcript_search_project_route(monkeypatch, app_client, set_db_overrid
             "query": query,
         }
 
-    monkeypatch.setattr(search_routes, "search_project_transcript", fake_search)
+    monkeypatch.setattr(sources_routes, "search_project_transcript", fake_search)
     set_db_override(_fake_db_semantic_200)
     response = app_client.post(
-        "/projects/11/transcript-search",
-        json={"query": "car", "limit": 3},
+        "/projects/11/sources/search",
+        json={"query": "car", "mode": "transcript", "limit": 3},
     )
     assert response.status_code == 200
     body = response.json()
     assert body["matches"][0]["match_text"] == "the car stopped"
     assert body["matches"][0]["source"] == "audio"
+
+
+def test_source_search_rejects_invalid_mode(app_client, set_db_override):
+    set_db_override(_fake_db_semantic_200)
+    response = app_client.post(
+        "/projects/11/sources/search",
+        json={"query": "car", "mode": "unknown", "limit": 3},
+    )
+
+    assert response.status_code == 422

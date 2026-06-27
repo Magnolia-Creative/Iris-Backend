@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas.search import SourceSearchRequest
 from app.auth import (
     ClerkPrincipal,
     require_clerk_user,
@@ -11,8 +12,10 @@ from app.auth import (
     require_owned_session,
 )
 from app.database import get_db
+from app.services.semantic_search_service import search_project_semantic
 from app.services.session_ingest import cancel_clip_processing, process_project_clips
 from app.services.transcript_store import get_clip_captions_payload, get_persisted_project_data
+from app.services.transcript_search_service import search_project_transcript
 from app.services.visual_frame_payload import build_visual_frames_by_local_key
 
 
@@ -122,6 +125,37 @@ async def get_project_source_transcript(
         body.get("processing_status") if isinstance(body, dict) else None,
     )
     return body
+
+
+@router.post("/projects/{project_id}/sources/search")
+async def search_project_sources(
+    project_id: int,
+    payload: SourceSearchRequest,
+    principal: ClerkPrincipal = Depends(require_clerk_user),
+    db: AsyncSession = Depends(get_db),
+):
+    preview = (payload.query or "").strip().replace("\n", " ")[:120]
+    logger.info(
+        "[sources/search] http project_id=%s mode=%s limit=%s query_preview=%r",
+        project_id,
+        payload.mode,
+        payload.limit,
+        preview,
+    )
+    await require_owned_project(db, project_id=project_id, principal=principal)
+    if payload.mode == "semantic":
+        return await search_project_semantic(
+            db,
+            project_id=project_id,
+            query=payload.query,
+            limit=payload.limit,
+        )
+    return await search_project_transcript(
+        db,
+        project_id=project_id,
+        query=payload.query,
+        limit=payload.limit,
+    )
 
 
 @router.delete("/projects/{project_id}/sources/{local_key}")
