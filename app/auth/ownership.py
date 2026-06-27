@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.clerk import ClerkPrincipal
+from app.config import settings
 from app.database import models
 
 
@@ -21,11 +22,11 @@ async def require_owned_project(
     project_id: int,
     principal: ClerkPrincipal,
 ) -> models.Project:
+    filters = [models.Project.id == project_id]
+    if not settings.local_auth_bypass_enabled:
+        filters.append(models.Project.clerk_user_id == principal.user_id)
     result = await db.execute(
-        select(models.Project).where(
-            models.Project.id == project_id,
-            models.Project.clerk_user_id == principal.user_id,
-        )
+        select(models.Project).where(*filters)
     )
     project = result.scalar_one_or_none()
     if project is None:
@@ -49,11 +50,11 @@ async def require_owned_session(
     session_id: int,
     principal: ClerkPrincipal,
 ) -> models.Session:
+    filters = [models.Session.id == session_id]
+    if not settings.local_auth_bypass_enabled:
+        filters.append(models.Session.clerk_user_id == principal.user_id)
     result = await db.execute(
-        select(models.Session).where(
-            models.Session.id == session_id,
-            models.Session.clerk_user_id == principal.user_id,
-        )
+        select(models.Session).where(*filters)
     )
     session = result.scalar_one_or_none()
     if session is None:

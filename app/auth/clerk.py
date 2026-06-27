@@ -61,6 +61,20 @@ def _principal_from_claims(claims: dict[str, Any]) -> ClerkPrincipal:
     return ClerkPrincipal(user_id=subject, session_id=session_id, claims=claims)
 
 
+def _local_auth_bypass_principal() -> ClerkPrincipal | None:
+    if not settings.local_auth_bypass_enabled:
+        return None
+    return ClerkPrincipal(
+        user_id=settings.local_auth_bypass_user_id,
+        session_id="local_auth_bypass",
+        claims={
+            "sub": settings.local_auth_bypass_user_id,
+            "sid": "local_auth_bypass",
+            "local_auth_bypass": True,
+        },
+    )
+
+
 def verify_clerk_token(token: str) -> ClerkPrincipal:
     try:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
@@ -121,6 +135,16 @@ def verify_clerk_token(token: str) -> ClerkPrincipal:
 
 
 async def require_clerk_user(request: Request) -> ClerkPrincipal:
+    bypass_principal = _local_auth_bypass_principal()
+    if bypass_principal is not None:
+        logger.warning(
+            "[auth] LOCAL_AUTH_BYPASS accepted request=%s user_id=%s iris_env=%s",
+            _request_summary(request),
+            bypass_principal.user_id,
+            settings.iris_env,
+        )
+        return bypass_principal
+
     auth_header = request.headers.get("Authorization")
     token = _extract_bearer_token(auth_header)
     if token is None:
@@ -158,6 +182,16 @@ def _websocket_token(websocket: WebSocket) -> str | None:
 
 
 async def require_clerk_websocket_user(websocket: WebSocket) -> ClerkPrincipal:
+    bypass_principal = _local_auth_bypass_principal()
+    if bypass_principal is not None:
+        logger.warning(
+            "[auth] LOCAL_AUTH_BYPASS accepted request=%s user_id=%s iris_env=%s",
+            _websocket_summary(websocket),
+            bypass_principal.user_id,
+            settings.iris_env,
+        )
+        return bypass_principal
+
     token = _websocket_token(websocket)
     if token is None:
         logger.warning(
