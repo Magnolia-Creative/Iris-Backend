@@ -91,3 +91,27 @@ def test_clerk_frontend_api_url_overrides_instance(monkeypatch):
     assert settings.clerk_frontend_api_url == "https://example.clerk.accounts.dev"
     assert settings.clerk_issuer == "https://example.clerk.accounts.dev"
     assert settings.clerk_jwks_url == "https://example.clerk.accounts.dev/.well-known/jwks.json"
+
+
+def test_local_auth_bypass_enabled_only_for_local_envs(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///test.db")
+    monkeypatch.setenv("IRIS_ENV", "local")
+    monkeypatch.setenv("LOCAL_AUTH_BYPASS", "true")
+    monkeypatch.setenv("LOCAL_AUTH_BYPASS_USER_ID", "dev_user")
+
+    settings = Settings()
+
+    assert settings.local_auth_bypass is True
+    assert settings.local_auth_bypass_enabled is True
+    assert settings.local_auth_bypass_user_id == "dev_user"
+
+
+def test_local_auth_bypass_ignored_in_production(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///test.db")
+    monkeypatch.setenv("IRIS_ENV", "production")
+    monkeypatch.setenv("LOCAL_AUTH_BYPASS", "true")
+
+    settings = Settings()
+
+    assert settings.local_auth_bypass is True
+    assert settings.local_auth_bypass_enabled is False
