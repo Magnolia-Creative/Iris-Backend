@@ -139,7 +139,7 @@ class Transcript(Base):
 
 
 class SentenceUploadTranscript(Base):
-    """Standalone sentence-level transcription rows (no clip), e.g. POST /transcriptions/sentences."""
+    """Standalone sentence-level transcription rows (no clip), e.g. POST /agent/transcriptions/sentences."""
 
     __tablename__ = "sentence_upload_transcripts"
     __table_args__ = (Index("idx_sentence_upload_transcripts_created_at", "created_at"),)

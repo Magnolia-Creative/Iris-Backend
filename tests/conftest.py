@@ -5,12 +5,7 @@ from fastapi.testclient import TestClient
 
 import main
 from app.api.routes import agent as agent_routes
-from app.api.routes import captions as captions_routes
-from app.api.routes import clips as clip_routes
-from app.api.routes import intent as intent_routes
 from app.api.routes import projects as project_routes
-from app.api.routes import search as search_routes
-from app.api.routes import sessions as session_routes
 from app.api.routes import sources as sources_routes
 from app.auth import ClerkPrincipal, require_clerk_user
 
@@ -43,33 +38,20 @@ def route_auth_overrides(monkeypatch, fake_principal):
         fake_require_owned_project_clip,
         raising=False,
     )
-    for route_module in (
-        captions_routes,
-        clip_routes,
-        agent_routes,
-        intent_routes,
-        project_routes,
-        search_routes,
-        sources_routes,
-    ):
+    for route_module in (agent_routes, project_routes, sources_routes):
         monkeypatch.setattr(
             route_module,
             "require_owned_project",
             fake_require_owned_project,
             raising=False,
         )
-    for route_module in (agent_routes, clip_routes, intent_routes, session_routes, sources_routes):
+    for route_module in (agent_routes, sources_routes):
         monkeypatch.setattr(
             route_module,
             "require_owned_session",
             fake_require_owned_session,
             raising=False,
         )
-    monkeypatch.setattr(
-        clip_routes,
-        "require_owned_project_clip",
-        fake_require_owned_project_clip,
-    )
     monkeypatch.setattr(
         sources_routes,
         "require_owned_project_clip",

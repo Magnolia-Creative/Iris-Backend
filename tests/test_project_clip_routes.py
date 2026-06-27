@@ -275,6 +275,63 @@ def test_get_agent_run_status_route(monkeypatch, app_client, set_db_override):
     assert response.json()["ready_for_websocket"] is True
 
 
+def test_get_agent_run_debug_route(monkeypatch, app_client, set_db_override):
+    async def fake_get_persisted_session_data(db, session_id, *, include_ingest_details=False):
+        assert session_id == 7
+        assert include_ingest_details is True
+        return {
+            "session_id": 7,
+            "session_name": "Launch Day",
+            "session_status": "ready",
+            "project_id": 11,
+            "project_name": "Launch Day",
+            "uploaded_count": 1,
+            "pending_clip_count": 0,
+            "settled_clip_count": 1,
+            "ready_for_websocket": True,
+            "videos": [],
+        }
+
+    async def fake_get_persisted_session_graph_state(*, db, session_id):
+        assert session_id == 7
+        return {"session_id": "7", "timeline": []}
+
+    def fake_build_session_debug_snapshot(*, session_id, session_payload, state):
+        assert session_id == 7
+        assert session_payload["project_id"] == 11
+        assert state == {"session_id": "7", "timeline": []}
+        return {"session_id": session_id, "events": [], "state": state}
+
+    monkeypatch.setattr(agent_routes, "get_persisted_session_data", fake_get_persisted_session_data)
+    monkeypatch.setattr(
+        agent_routes,
+        "get_persisted_session_graph_state",
+        fake_get_persisted_session_graph_state,
+    )
+    monkeypatch.setattr(agent_routes, "get_session_state", lambda _session_id: None)
+    monkeypatch.setattr(agent_routes, "initialize_session_debug", lambda *_args: None)
+    monkeypatch.setattr(
+        agent_routes,
+        "build_session_debug_snapshot",
+        fake_build_session_debug_snapshot,
+    )
+    set_db_override(_fake_db)
+    response = app_client.get("/agent/runs/7/debug")
+
+    assert response.status_code == 200
+    assert response.json()["state"]["session_id"] == "7"
+
+
+def test_agent_run_rejects_unknown_kind(app_client, set_db_override):
+    set_db_override(_fake_db)
+    response = app_client.post(
+        "/agent/runs",
+        json={"kind": "unknown", "project_name": "Launch Day"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_cancel_project_source_route(monkeypatch, app_client, set_db_override):
     async def fake_cancel_clip_processing(db, *, project_id, session_id, local_key):
         assert project_id == 11

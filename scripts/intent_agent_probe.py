@@ -104,6 +104,7 @@ def main() -> int:
         raise ValueError("--context-file is required.")
 
     payload: dict[str, Any] = {
+        "kind": "intent",
         "prompt": args.prompt,
         "context": context.get("context") if isinstance(context.get("context"), dict) else context,
     }
@@ -120,7 +121,7 @@ def main() -> int:
     if args.token:
         headers["Authorization"] = f"Bearer {args.token}"
 
-    url = f"{args.base_url.rstrip('/')}/agent/intent"
+    url = f"{args.base_url.rstrip('/')}/agent/runs"
     with httpx.Client(timeout=args.timeout) as client:
         response = client.post(url, json=payload, headers=headers)
 
