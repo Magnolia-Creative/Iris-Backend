@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock
 
-from app.api.routes import intent as intent_routes
+from app.api.routes import agent as agent_routes
 from app.agent.intent.editing.models import CompileSource, IntentCompileResult, IntentCompilerContext
 from app.agent.intent.models import IntentAgentResponse
 from app.agent.intent.ui.models import IntentUIPlanRequest
@@ -57,17 +57,18 @@ def test_agent_intent_route_covers_visual_workspace_planning(monkeypatch, app_cl
         )
         return IntentAgentResponse(edit=_edit_result(), ui=ui_plan)
 
-    monkeypatch.setattr(intent_routes, "require_owned_project", owned_project)
-    monkeypatch.setattr(intent_routes, "require_owned_session", owned_session)
+    monkeypatch.setattr(agent_routes, "require_owned_project", owned_project)
+    monkeypatch.setattr(agent_routes, "require_owned_session", owned_session)
     monkeypatch.setattr(
-        intent_routes,
+        agent_routes,
         "prepare_intent_transcript_context",
         fake_prepare_intent_transcript_context,
     )
-    monkeypatch.setattr(intent_routes, "run_intent_agent", fake_run_intent_agent)
+    monkeypatch.setattr(agent_routes, "run_intent_agent", fake_run_intent_agent)
     response = app_client.post(
-        "/agent/intent",
+        "/agent/runs",
         json={
+            "kind": "intent",
             "prompt": "apply a vintage effect",
             "context": context.model_dump(mode="json", by_alias=True),
         },

@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 
+from app.api.routes import agent as agent_routes
 from app.api.routes import projects as project_routes
-from app.api.routes import sessions as session_routes
 from app.api.routes import sources as sources_routes
 from app.api.routes import transcriptions as transcription_routes
 
@@ -71,7 +71,7 @@ def test_create_sentence_transcription_route(monkeypatch, app_client, set_db_ove
     )
 
 
-def test_create_project_agent_session_route(monkeypatch, app_client, set_db_override):
+def test_create_automake_agent_run_with_new_project_route(monkeypatch, app_client, set_db_override):
     async def fake_create_agent_session(db, *, owner_user_id, session_name=None, project_name=None):
         assert owner_user_id == "user_test"
         assert session_name is None
@@ -89,9 +89,12 @@ def test_create_project_agent_session_route(monkeypatch, app_client, set_db_over
             "videos": [],
         }
 
-    monkeypatch.setattr(project_routes, "create_agent_session", fake_create_agent_session)
+    monkeypatch.setattr(agent_routes, "create_agent_session", fake_create_agent_session)
     set_db_override(_fake_db)
-    response = app_client.post("/projects/agent-sessions", json={"project_name": "Launch Day"})
+    response = app_client.post(
+        "/agent/runs",
+        json={"kind": "automake", "project_name": "Launch Day"},
+    )
     assert response.status_code == 200
     assert response.json()["project_id"] == 11
     assert response.json()["session_name"] == "Launch Day"
@@ -134,7 +137,7 @@ def test_get_project_sources_route(monkeypatch, app_client, set_db_override):
     assert response.json()["project_id"] == 11
 
 
-def test_create_agent_session_for_project_route(monkeypatch, app_client, set_db_override):
+def test_create_automake_agent_run_for_project_route(monkeypatch, app_client, set_db_override):
     async def fake_create_agent_session_for_project(
         db,
         *,
@@ -159,14 +162,14 @@ def test_create_agent_session_for_project_route(monkeypatch, app_client, set_db_
         }
 
     monkeypatch.setattr(
-        project_routes,
+        agent_routes,
         "create_agent_session_for_project",
         fake_create_agent_session_for_project,
     )
     set_db_override(_fake_db)
     response = app_client.post(
-        "/projects/11/agent-sessions",
-        json={"session_name": "Edit run"},
+        "/agent/runs",
+        json={"kind": "automake", "project_id": 11, "session_name": "Edit run"},
     )
     assert response.status_code == 200
     assert response.json()["session_id"] == 9
@@ -234,7 +237,7 @@ def test_process_project_source_batch_route(monkeypatch, app_client, set_db_over
     assert "clip_meta" not in response.json()["videos"][0]
 
 
-def test_get_session_status_route(monkeypatch, app_client, set_db_override):
+def test_get_agent_run_status_route(monkeypatch, app_client, set_db_override):
     async def fake_get_persisted_session_data(db, session_id, *, include_ingest_details=False):
         assert session_id == 7
         assert include_ingest_details is False
@@ -265,9 +268,9 @@ def test_get_session_status_route(monkeypatch, app_client, set_db_override):
             ],
         }
 
-    monkeypatch.setattr(session_routes, "get_persisted_session_data", fake_get_persisted_session_data)
+    monkeypatch.setattr(agent_routes, "get_persisted_session_data", fake_get_persisted_session_data)
     set_db_override(_fake_db)
-    response = app_client.get("/sessions/7")
+    response = app_client.get("/agent/runs/7")
     assert response.status_code == 200
     assert response.json()["session_status"] == "ready"
     assert response.json()["ready_for_websocket"] is True
