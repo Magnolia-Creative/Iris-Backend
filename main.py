@@ -1,11 +1,8 @@
 from contextlib import suppress
-from datetime import datetime
-from decimal import Decimal
 import json
 import logging
 from time import perf_counter
 from typing import Any
-from typing import Literal
 
 from fastapi import (
     Body,
@@ -19,11 +16,26 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.app import create_app
+from app.api.context import context_id as _context_id
+from app.api.intent_logging import (
+    intent_context_log_summary as _intent_context_log_summary,
+    intent_result_log_summary as _intent_result_log_summary,
+)
+from app.api.schemas.intent import VoiceIntentStartPayload
+from app.api.schemas.projects import (
+    AgentSessionCreatePayload,
+    AgentSessionForProjectCreatePayload,
+    ProjectCreatePayload,
+)
+from app.api.schemas.search import SearchRequest as SemanticSearchRequest
+from app.api.schemas.sessions import WebSocketRepromptPayload, WebSocketSessionStartPayload
+from app.api.session_messages import is_timeline_approval_message as _is_timeline_approval_message
+from app.api.timing import elapsed_ms as _elapsed_ms
 from app.auth import (
     ClerkPrincipal,
     require_clerk_user,
@@ -84,117 +96,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-def _elapsed_ms(started_at: float) -> int:
-    return round((perf_counter() - started_at) * 1000)
-
-
-class ClipCreate(BaseModel):
-    title: str | None = None
-    file_name: str | None = None
-    source_url: str | None = None
-    mime_type: str | None = None
-    codec: str | None = None
-    frame_rate: Decimal | None = None
-    duration_seconds: Decimal | None = None
-    width: int | None = None
-    height: int | None = None
-    file_size_bytes: int | None = None
-    language_code: str | None = None
-    captured_at: datetime | None = None
-
-
-class IngestCreate(BaseModel):
-    project_name: str
-    clip: ClipCreate
-    transcript: dict[str, Any]
-    summary: str
-
-
-class AgentSessionCreatePayload(BaseModel):
-    project_name: str | None = None
-    session_name: str | None = None
-
-
-class ProjectCreatePayload(BaseModel):
-    name: str | None = None
-
-
-class AgentSessionForProjectCreatePayload(BaseModel):
-    session_name: str | None = None
-
-
-class SemanticSearchRequest(BaseModel):
-    query: str
-    limit: int | None = None
-
-
-class WebSocketSessionStartPayload(BaseModel):
-    type: Literal["start_session"]
-    user_prompt: str
-
-
-class WebSocketRepromptPayload(BaseModel):
-    type: Literal["reprompt"]
-    prompt: str
-
-
-class VoiceIntentStartPayload(BaseModel):
-    type: Literal["start"]
-    context: IntentCompilerContext
-
-
-def _is_timeline_approval_message(prompt: str) -> bool:
-    normalized = " ".join(prompt.lower().strip().split())
-    rejection_markers = {"do not approve", "don't approve", "not approved", "reject", "decline"}
-    if any(marker in normalized for marker in rejection_markers):
-        return False
-
-    if normalized in {"yes", "yep", "yeah", "ok", "okay"}:
-        return True
-
-    approval_markers = {"approve", "approved", "looks good", "go ahead", "ship it"}
-    return any(marker in normalized for marker in approval_markers)
-
-
-def _intent_context_log_summary(
-    context: IntentCompilerContext,
-    *,
-    hydration: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    summary: dict[str, Any] = {
-        "timeline_id": context.timelineId,
-        "project_id": context.projectId,
-        "session_id": context.sessionId,
-        "selected_clip_id": context.selectedClipId,
-        "selected_track_id": context.selectedTrackId,
-        "clip_count": len(context.clipsById),
-        "track_count": len(context.orderedClipIdsByTrackId),
-        "transcript_context_count": len(context.transcriptContextsByClipId),
-    }
-    if hydration:
-        summary["transcript_hydration"] = hydration
-    return summary
-
-
-def _intent_result_log_summary(result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "action_count": len(result.get("actions") or []),
-        "experimental_effect_count": len(result.get("experimentalEffectOperations") or []),
-        "warnings": result.get("warnings") or [],
-        "needs_clarification": result.get("needsClarification"),
-        "source": result.get("source"),
-    }
-
-
-def _context_id(value: int | str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 app = create_app()
