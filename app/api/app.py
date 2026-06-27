@@ -12,7 +12,6 @@ from app.api.routes import (
     health,
     projects,
     sources,
-    transcriptions,
 )
 
 
@@ -50,7 +49,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(health.router)
-    app.include_router(transcriptions.router)
     app.include_router(projects.router)
     app.include_router(sources.router)
     app.include_router(agent.router)

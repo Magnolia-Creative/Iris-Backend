@@ -3,7 +3,6 @@ from collections.abc import AsyncIterator
 from app.api.routes import agent as agent_routes
 from app.api.routes import projects as project_routes
 from app.api.routes import sources as sources_routes
-from app.api.routes import transcriptions as transcription_routes
 
 
 async def _fake_db() -> AsyncIterator[object]:
@@ -42,19 +41,19 @@ def test_create_sentence_transcription_route(monkeypatch, app_client, set_db_ove
         printed_lines.append(" ".join(str(arg) for arg in args))
 
     monkeypatch.setattr(
-        transcription_routes,
+        agent_routes,
         "transcribe_upload_to_sentences",
         fake_transcribe_upload_to_sentences,
     )
     monkeypatch.setattr(
-        transcription_routes,
+        agent_routes,
         "insert_sentence_upload_transcript",
         fake_insert_sentence_upload,
     )
     monkeypatch.setattr("builtins.print", fake_print)
     set_db_override(_fake_db)
     response = app_client.post(
-        "/transcriptions/sentences",
+        "/agent/transcriptions/sentences",
         files={"audio": ("clip.m4a", b"audio", "audio/mp4")},
     )
 
