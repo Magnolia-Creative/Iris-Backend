@@ -1,4 +1,4 @@
-"""Normalize /transcriptions/sentences API output into JSONB shape used by intent transcript hydration."""
+"""Normalize /agent/transcriptions/sentences API output into JSONB shape used by intent transcript hydration."""
 
 from __future__ import annotations
 

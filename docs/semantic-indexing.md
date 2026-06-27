@@ -4,7 +4,7 @@ Clip ingest can schedule a **vector index** job (Gemini `gemini-embedding-2` @ 3
 
 ## Environment
 
-- `GEMINI_API_KEY` — required for embeddings and `POST /projects/{id}/semantic-search`.
+- `GEMINI_API_KEY` — required for embeddings and semantic `POST /projects/{id}/sources/search`.
 - `SEMANTIC_INDEXING_ENABLED` — default `true`; set to `false` to skip scheduling index tasks.
 - `DATABASE_URL` — must point to a Postgres instance where the `vector` extension can be enabled.
 
@@ -16,7 +16,7 @@ If the extension is unavailable on your host, migrations or inserts will fail un
 
 ## Client upload
 
-`POST /projects/{project_id}/clips/process` accepts optional:
+`POST /projects/{project_id}/sources` accepts optional:
 
 - `visual_frame_manifest` — JSON string `{ "clips": [ { "local_key", "frames": [ { chunk_index, start_time_seconds, end_time_seconds, center_time_seconds, filename } ] } ] }`
 - `visual_frames` — multipart file parts (field name `visual_frames`) whose filenames match the manifest.
