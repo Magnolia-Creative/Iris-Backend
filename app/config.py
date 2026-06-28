@@ -50,7 +50,7 @@ class Settings:
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.intent_openai_model = os.getenv("INTENT_OPENAI_MODEL", "gpt-5.4-nano")
-        self.intent_ui_openai_model = os.getenv("INTENT_UI_OPENAI_MODEL", "gpt-5.5-mini")
+        self.intent_ui_openai_model = os.getenv("INTENT_UI_OPENAI_MODEL", "gpt-5.4-mini")
         self.iris_env = os.getenv("IRIS_ENV", "production").strip().lower()
         self.local_auth_bypass = _env_bool("LOCAL_AUTH_BYPASS", False)
         self.local_auth_bypass_user_id = os.getenv(
