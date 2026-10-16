@@ -1,6 +1,7 @@
 """Slice audio into overlapping WAV chunks using ffmpeg."""
 
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,7 +12,33 @@ from app.services.chunk_time_windows import chunk_time_windows
 logger = logging.getLogger(__name__)
 
 
+def _ffmpeg_path() -> str | None:
+    system_binary = shutil.which("ffmpeg")
+    if system_binary:
+        return system_binary
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        return None
+
+
 def _ffprobe_duration_seconds(audio_path: Path) -> float:
+    if not shutil.which("ffprobe"):
+        ffmpeg = _ffmpeg_path()
+        if not ffmpeg:
+            return 0.0
+        probe = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(audio_path)],
+            capture_output=True,
+            text=True,
+        )
+        match = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", probe.stderr)
+        return (
+            int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+            if match else 0.0
+        )
     cmd = [
         "ffprobe",
         "-v",
@@ -51,7 +78,7 @@ def slice_audio_to_wav_chunks(
             chunk_len = max(0.01, end - start)
             out_wav = Path(tmp) / f"chunk_{idx}.wav"
             cmd = [
-                "ffmpeg",
+                _ffmpeg_path() or "ffmpeg",
                 "-y",
                 "-hide_banner",
                 "-loglevel",
@@ -85,4 +112,4 @@ def slice_audio_to_wav_chunks(
 
 
 def ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+    return _ffmpeg_path() is not None
