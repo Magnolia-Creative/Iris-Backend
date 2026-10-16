@@ -41,7 +41,9 @@ def is_known_unversioned_baseline(connection) -> bool:
 
 async def prepare_baseline() -> bool:
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+        tables = await connection.run_sync(lambda sync: inspect(sync).get_table_names())
+        if not tables:
+            await connection.run_sync(Base.metadata.create_all)
         return await connection.run_sync(is_known_unversioned_baseline)
 
 
