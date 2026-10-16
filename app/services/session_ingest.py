@@ -19,7 +19,7 @@ from app.services.transcript_normalize import (
     segments_to_full_text,
 )
 from app.config import settings
-from app.services.clip_embedding_store import delete_embeddings_for_clip
+from app.services.clip_embedding_store import count_embeddings_for_clip, delete_embeddings_for_clip
 from app.services import gemini_embedding
 from app.services.transcript_store import (
     get_persisted_project_data,
@@ -219,7 +219,7 @@ def schedule_vector_index_tasks(
         asyncio.create_task(
             run_clip_vector_index(
                 project_id=project_id,
-                session_id=session_id,
+                session_id=int(clip.session_id) if clip.session_id is not None else None,
                 clip_id=int(clip.id),
                 local_key=local_key,
                 audio_bytes=prepared_video["video_bytes"],
@@ -288,14 +288,21 @@ async def process_project_clips(
                 local_key=local_key,
             )
             if existing_clip is not None and existing_clip.processing_status == "ready":
+                if not settings.semantic_indexing_enabled or not gemini_embedding.gemini_configured() \
+                        or await count_embeddings_for_clip(db, clip_id=int(existing_clip.id)) > 0:
+                    logger.info(
+                        "[INGEST] Skipping already-ready clip project_id=%s local_key=%s clip_id=%s",
+                        project.id,
+                        local_key,
+                        existing_clip.id,
+                    )
+                    continue
                 logger.info(
-                    "[INGEST] Skipping already-ready clip project_id=%s local_key=%s clip_id=%s",
+                    "[INGEST] Reindexing ready clip without embeddings project_id=%s clip_id=%s",
                     project.id,
-                    local_key,
                     existing_clip.id,
                 )
-                continue
-            if existing_clip is not None:
+            elif existing_clip is not None:
                 await _delete_clip_artifacts(db, existing_clip)
 
             t_read = time.perf_counter()
@@ -315,6 +322,8 @@ async def process_project_clips(
                     "video_bytes": video_bytes,
                     "extension": extension,
                     "clip_correlation_id": local_key,
+                    "existing_ready_clip": existing_clip if existing_clip is not None
+                    and existing_clip.processing_status == "ready" else None,
                 }
             )
             logger.info(
@@ -332,7 +341,11 @@ async def process_project_clips(
 
         logger.info("[INGEST] Scheduling %d background transcription task(s)", len(prepared_videos))
         pending_rows: list[tuple[dict[str, Any], models.Clip]] = []
+        reindex_rows: list[tuple[dict[str, Any], models.Clip]] = []
         for prepared_video in prepared_videos:
+            if prepared_video["existing_ready_clip"] is not None:
+                reindex_rows.append((prepared_video, prepared_video["existing_ready_clip"]))
+                continue
             clip = models.Clip(
                 project_id=int(project.id),
                 session_id=int(session.id) if session is not None else None,
@@ -358,7 +371,7 @@ async def process_project_clips(
         vector_scheduled = schedule_vector_index_tasks(
             project_id=int(project.id),
             session_id=int(session.id) if session is not None else None,
-            pending_rows=pending_rows,
+            pending_rows=pending_rows + reindex_rows,
             visual_frames_by_local_key=visual_frames_by_local_key,
         )
     except HTTPException:

@@ -33,6 +33,7 @@ def _ffprobe_duration_seconds(audio_path: Path) -> float:
             [ffmpeg, "-hide_banner", "-i", str(audio_path)],
             capture_output=True,
             text=True,
+            check=False,
         )
         match = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", probe.stderr)
         return (

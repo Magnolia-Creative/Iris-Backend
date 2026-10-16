@@ -146,3 +146,11 @@ async def count_embeddings_for_project(db: AsyncSession, *, project_id: int) -> 
         {"pid": project_id},
     )
     return int(result.scalar_one() or 0)
+
+
+async def count_embeddings_for_clip(db: AsyncSession, *, clip_id: int) -> int:
+    result = await db.execute(
+        text("SELECT COUNT(*) FROM clip_chunk_embeddings WHERE clip_id = :clip_id"),
+        {"clip_id": clip_id},
+    )
+    return int(result.scalar_one() or 0)
