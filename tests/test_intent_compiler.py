@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 import main
+from app.auth import ClerkPrincipal
 from app.intent_compiler.capabilities import DEFAULT_EFFECT_CAPABILITIES
 from app.intent_compiler.compiler import IntentCompiler, action_execution_tier
 from app.intent_compiler.llm import (
@@ -39,6 +40,10 @@ from app.services.realtime_transcription import DEFAULT_TRANSCRIBE_MODEL
 @asynccontextmanager
 async def _noop_lifespan(_app):
     yield
+
+
+async def _test_websocket_principal(_websocket):
+    return ClerkPrincipal(user_id="user_test", session_id="sess_test", claims={})
 
 
 def _sample_context() -> dict:
@@ -1191,6 +1196,7 @@ def test_text_intent_run_streams_final_result(monkeypatch):
 
     monkeypatch.setattr(intent_runs, "get_redis_client", lambda: redis)
     monkeypatch.setattr(main, "IntentCompilerService", FakeIntentCompilerService)
+    monkeypatch.setattr(main, "require_clerk_websocket_user", _test_websocket_principal)
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
     try:
@@ -1262,6 +1268,7 @@ def test_voice_intent_websocket_delegates_after_start(monkeypatch):
         )
 
     monkeypatch.setattr(main, "stream_voice_intent", fake_stream_voice_intent)
+    monkeypatch.setattr(main, "require_clerk_websocket_user", _test_websocket_principal)
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = _noop_lifespan
     try:
